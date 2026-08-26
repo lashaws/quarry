@@ -1,0 +1,12 @@
+node_modules/
+out/
+release/
+dist/
+.test-out/
+*.tsbuildinfo
+
+# Local editor and OS noise
+.DS_Store
+.idea/
+.vscode/
+*.log

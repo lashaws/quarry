@@ -1,0 +1,50 @@
+/*
+ * Palette derived from the JetBrains New UI dark theme. This is the one file to
+ * tune the look: every component reads these variables and nothing hardcodes a
+ * colour.
+ */
+:root {
+  --bg-app: #1e1f22;
+  --bg-panel: #2b2d30;
+  --bg-elevated: #313438;
+  --bg-input: #1e1f22;
+  --bg-hover: #35373b;
+  --bg-selected: #2e436e;
+  --bg-selected-inactive: #303337;
+
+  --border: #393b40;
+  --border-strong: #4e5157;
+  --border-focus: #3574f0;
+
+  --text: #dfe1e5;
+  --text-dim: #9da0a8;
+  --text-muted: #6f737a;
+  --text-inverse: #ffffff;
+
+  --accent: #3574f0;
+  --accent-hover: #467ff2;
+  --success: #5fad65;
+  --warning: #d9a343;
+  --danger: #db5c5c;
+  --null: #7a7e85;
+
+  --syn-keyword: #cf8e6d;
+  --syn-string: #6aab73;
+  --syn-number: #2aacb8;
+  --syn-comment: #7a7e85;
+  --syn-ident: #bcbec4;
+  --syn-function: #56a8f5;
+
+  --kind-table: #5fad65;
+  --kind-view: #56a8f5;
+  --kind-column: #b3ae60;
+  --kind-schema: #c77dbb;
+  --kind-keyword: #cf8e6d;
+
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace;
+
+  --size-row: 24px;
+  --radius: 4px;
+  --shadow-popup: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
