@@ -32,6 +32,25 @@ export function getSecret(id: string): string | undefined {
   }
 }
 
+/**
+ * True when a password is stored but cannot be decrypted.
+ *
+ * The safeStorage key lives in the OS keychain and is bound to the application
+ * that created it, so moving between an unsigned dev build and a packaged one
+ * leaves the saved password present but unreadable. Reporting that as "no
+ * password" sends the user hunting for a problem that does not exist.
+ */
+export function secretIsUnreadable(id: string): boolean {
+  const blob = readJson<Vault>(FILE, {})[id]
+  if (!blob) return false
+  try {
+    safeStorage.decryptString(Buffer.from(blob, 'base64'))
+    return false
+  } catch {
+    return true
+  }
+}
+
 export function deleteSecret(id: string): void {
   const vault = readJson<Vault>(FILE, {})
   delete vault[id]

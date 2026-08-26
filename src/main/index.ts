@@ -247,9 +247,13 @@ if (process.env['ELECTRON_RENDERER_URL']) {
   app.commandLine.appendSwitch('remote-debugging-port', '9222')
 }
 
-// Before whenReady: the app menu's About/Hide/Quit items and the userData path
-// are all derived from this, and in dev the bundle is stock Electron.app.
-app.setName('Quarry')
+// Before whenReady: the app menu's About/Hide/Quit items, the userData path and
+// the safeStorage keychain entry are all derived from this.
+//
+// Dev takes a separate identity on purpose. Two differently-signed binaries
+// claiming one name fight over the same keychain item, and whichever ran last
+// leaves the other unable to decrypt its own saved passwords.
+app.setName(process.env['ELECTRON_RENDERER_URL'] ? 'Quarry Dev' : 'Quarry')
 
 void app.whenReady().then(() => {
   registerIpc()

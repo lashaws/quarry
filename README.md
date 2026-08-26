@@ -101,6 +101,11 @@ PGHOST=localhost PGPORT=55432 PGDATABASE=quarrytest PGUSER=quarry PGPASSWORD=qua
   npm run test:all
 ```
 
+Dev runs under a separate identity (`Quarry Dev`) with its own settings
+directory and keychain entry. Two differently-signed builds claiming one name
+fight over the same `safeStorage` key, and whichever ran last leaves the other
+unable to decrypt its own saved passwords.
+
 In dev the app exposes a CDP endpoint on 9222;
 `node test/probe/drive.mjs '[["label","<js>"]]'` evaluates JavaScript inside the
 running window, and `node test/probe/drive.mjs shot:out.png` screenshots it. That

@@ -97,7 +97,18 @@ export function App() {
       setActiveTabId(ws.activeTabId && restored.some((t) => t.id === ws.activeTabId) ? ws.activeTabId : restored[0].id)
       sidebar.setSize(ws.sidebarWidth || 280)
       resultsPane.setSize(ws.resultsHeight || 320)
-      const initial = restored[0]?.connectionId ?? conns[0]?.id ?? null
+      // A restored tab can name a connection that has since been deleted, so
+      // fall back rather than trying to open one that no longer exists.
+      const known = new Set(conns.map((c) => c.id))
+      const remembered = restored.find((t) => t.connectionId && known.has(t.connectionId))?.connectionId
+      const initial = remembered ?? conns[0]?.id ?? null
+
+      if (initial) {
+        // Repoint any tab left pointing at a connection that is gone.
+        setTabs((ts) =>
+          ts.map((t) => (t.connectionId && known.has(t.connectionId) ? t : { ...t, connectionId: initial }))
+        )
+      }
       setActiveConnectionId(initial)
       // Reopen the last session automatically, so the tree is usable on launch.
       if (initial) void connectRef.current?.(initial)
@@ -925,9 +936,12 @@ export function App() {
           onDeleted={(id) => {
             setModal({ kind: 'none' })
             void window.api.connections.remove(id).then(async () => {
-              setConnections(await window.api.connections.list())
+              const list = await window.api.connections.list()
+              setConnections(list)
+              const fallback = list[0]?.id ?? null
+              setTabs((ts) => ts.map((t) => (t.connectionId === id ? { ...t, connectionId: fallback } : t)))
               if (id === activeConnectionId) {
-                setActiveConnectionId(null)
+                setActiveConnectionId(fallback)
                 setCatalog(null)
               }
             })

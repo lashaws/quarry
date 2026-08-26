@@ -14,7 +14,7 @@ import { renderDdl } from './query/ddl'
 import { parsePlan } from './query/plan'
 import { DBA_QUERIES, findDbaQuery, type DbaQuery } from './dba/queries'
 import { resolveEditTarget } from './query/editable'
-import { getSecret } from './store/secrets'
+import { getSecret, secretIsUnreadable } from './store/secrets'
 import { record } from './store/history'
 
 interface ActiveQuery {
@@ -56,7 +56,16 @@ export class Session {
   async connect(cfg: ConnectionConfig): Promise<ConnectionState> {
     const existing = this.connections.get(cfg.id)
     if (existing?.connected) return this.state(cfg.id)
-    const conn = new PgConnection(cfg, getSecret(cfg.id))
+
+    const password = getSecret(cfg.id)
+    if (password === undefined && secretIsUnreadable(cfg.id)) {
+      throw new Error(
+        `The saved password for ${cfg.name} is in the keychain but this build cannot read it. ` +
+          'That happens after installing or re-signing the app. Open the connection and enter the password once to store it again.'
+      )
+    }
+
+    const conn = new PgConnection(cfg, password)
     await conn.connect()
     this.connections.set(cfg.id, conn)
     return this.state(cfg.id)
