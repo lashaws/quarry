@@ -79,6 +79,8 @@ export function App() {
   const result = results[activeResult] ?? null
   const pendingCount = editCount(edits)
   const activeState = activeConnectionId ? states[activeConnectionId] ?? null : null
+  const txMode = activeState?.txMode ?? 'auto'
+  const txStatus = activeState?.txStatus ?? 'idle'
   const connectedIds = useMemo(
     () => new Set(Object.values(states).filter((s) => s.connected).map((s) => s.id)),
     [states]
@@ -425,10 +427,20 @@ export function App() {
   const setTxMode = useCallback(
     async (mode: TxMode) => {
       if (!activeConnectionId) return
+      // Leaving manual mode rolls the open transaction back — never silently.
+      if (
+        mode === 'auto' &&
+        states[activeConnectionId]?.txStatus === 'active' &&
+        !window.confirm(
+          'Switching to auto-commit will ROLL BACK the open transaction and discard its uncommitted changes.\n\nContinue?'
+        )
+      ) {
+        return
+      }
       const st = await window.api.tx.setMode(activeConnectionId, mode)
       setStates((s) => ({ ...s, [activeConnectionId]: st }))
     },
-    [activeConnectionId]
+    [activeConnectionId, states]
   )
   const commit = useCallback(async () => {
     if (!activeConnectionId) return
@@ -707,6 +719,34 @@ export function App() {
         >
           History
         </button>
+        {activeState?.connected && (
+          <button
+            className={txMode === 'manual' ? 'tx-mode manual' : 'ghost tx-mode'}
+            onClick={() => void setTxMode(txMode === 'manual' ? 'auto' : 'manual')}
+            title={
+              txMode === 'manual'
+                ? 'Manual commit: statements run inside a transaction you can inspect, then Commit or Rollback. Click to switch back to auto-commit.'
+                : 'Auto-commit: every statement is permanent immediately. Click to run statements in a reviewable transaction instead.'
+            }
+          >
+            {txMode === 'manual' ? '⏸ Manual commit' : 'Auto-commit'}
+          </button>
+        )}
+        {txMode === 'manual' && txStatus !== 'idle' && (
+          <>
+            <span className={`q-pill ${txStatus === 'failed' ? 'tx-failed' : 'tx-active'}`}>
+              {txStatus === 'failed' ? 'TX failed' : 'TX open'}
+            </span>
+            {/* An aborted transaction can only be rolled back; Postgres would
+                turn COMMIT into ROLLBACK anyway. */}
+            <button onClick={() => void commit()} disabled={busy || txStatus === 'failed'} title="Commit the open transaction (⌘⌥⏎)">
+              Commit
+            </button>
+            <button onClick={() => void rollback()} disabled={busy} title="Discard the open transaction (⌘⌥Z)">
+              Rollback
+            </button>
+          </>
+        )}
         <button
           className="primary"
           onClick={() => void runOn(currentStatement(), 'statement')}

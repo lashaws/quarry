@@ -171,12 +171,23 @@ input:focus, select:focus { border-color: var(--border-focus); }
   color: var(--text-dim); font-size: 11px;
 }
 .statusbar .spacer { flex: 1; }
-.statusbar .q-pill {
+.statusbar .q-pill,
+.titlebar .q-pill {
   padding: 1px 7px; border-radius: 9px; border: 1px solid var(--border-strong);
 }
+.titlebar .q-pill { font-size: 11px; }
 .q-pill.tx-active { border-color: var(--warning); color: var(--warning); }
 .q-pill.tx-failed { border-color: var(--danger); color: var(--danger); }
 .q-pill.dirty { border-color: var(--accent); color: var(--accent); }
+
+/* The commit-mode toggle reads as a warning while manual mode is on: every
+   statement is provisional until Commit, which is worth glancing attention. */
+button.tx-mode.manual {
+  background: transparent;
+  border-color: var(--warning);
+  color: var(--warning);
+}
+button.tx-mode.manual:hover:not(:disabled) { background: var(--bg-hover); }
 
 /* ---- modal ---- */
 .q-overlay {
