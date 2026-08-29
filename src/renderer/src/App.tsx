@@ -54,6 +54,7 @@ export function App() {
   const [edits, setEdits] = useState<GridEdits>(emptyEdits())
   const [preview, setPreview] = useState<string[]>([])
   const [filterText, setFilterText] = useState('')
+  const [transposed, setTransposed] = useState(false)
   const [focus, setFocus] = useState<{ row: number | null; col: number | null }>({ row: null, col: null })
   const [ddlText, setDdlText] = useState<string | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
@@ -212,6 +213,7 @@ export function App() {
       setEdits(emptyEdits())
       setPreview([])
       setFilterText('')
+      setTransposed(false)
       await refreshState(connectionId)
       // DDL changes the catalog underneath us; reload so the tree and
       // completion do not go stale after a CREATE/ALTER/DROP.
@@ -492,6 +494,11 @@ export function App() {
     [activeConnectionId, runOn]
   )
 
+  const notify = useCallback((label: string) => {
+    setCopied(label)
+    window.setTimeout(() => setCopied(null), 1800)
+  }, [])
+
   /**
    * Copies the selection, or everything left after the filter when nothing is
    * selected — the same rule DataGrip's grid copy follows.
@@ -500,24 +507,27 @@ export function App() {
     async (format: CopyFormat) => {
       const api = gridApi.current
       if (!result || !api) return
-      const selected = api.getSelectedNodes()
-      const nodes = selected.length ? selected : []
       const rows: Cell[][] = []
 
-      const collect = (data: Record<string, unknown> | undefined): void => {
-        if (!data) return
-        rows.push(result.fields.map((_f, i) => (data[`c${i}`] ?? null) as Cell))
+      if (transposed) {
+        // The grid's rows are result columns here; selection there does not
+        // name data rows, so copy the whole result instead.
+        rows.push(...result.rows)
+      } else {
+        const nodes = api.getSelectedNodes()
+        const collect = (data: Record<string, unknown> | undefined): void => {
+          if (!data) return
+          rows.push(result.fields.map((_f, i) => (data[`c${i}`] ?? null) as Cell))
+        }
+        if (nodes.length) nodes.forEach((n) => collect(n.data as Record<string, unknown>))
+        else api.forEachNodeAfterFilterAndSort((n) => collect(n.data as Record<string, unknown>))
       }
-
-      if (nodes.length) nodes.forEach((n) => collect(n.data as Record<string, unknown>))
-      else api.forEachNodeAfterFilterAndSort((n) => collect(n.data as Record<string, unknown>))
 
       if (!rows.length) return
       await navigator.clipboard.writeText(renderCopy(result, rows, format))
-      setCopied(`${rows.length} row${rows.length === 1 ? '' : 's'} as ${format.toUpperCase()}`)
-      window.setTimeout(() => setCopied(null), 1800)
+      notify(`${rows.length} row${rows.length === 1 ? '' : 's'} as ${format.toUpperCase()}`)
     },
-    [result]
+    [result, transposed, notify]
   )
 
   const exportCsv = useCallback(async () => {
@@ -813,13 +823,22 @@ export function App() {
               <span className="spacer" />
 
               {result && result.fields.length > 0 && (
-                <input
-                  className="filter-box"
-                  placeholder="Filter rows…"
-                  value={filterText}
-                  onChange={(e) => setFilterText(e.target.value)}
-                  spellCheck={false}
-                />
+                <>
+                  <button
+                    className={transposed ? 'primary' : 'ghost'}
+                    onClick={() => setTransposed((v) => !v)}
+                    title="Swap rows and columns"
+                  >
+                    ⇄ Transpose
+                  </button>
+                  <input
+                    className="filter-box"
+                    placeholder="Filter rows…"
+                    value={filterText}
+                    onChange={(e) => setFilterText(e.target.value)}
+                    spellCheck={false}
+                  />
+                </>
               )}
               {result && !result.complete && (
                 <button className="ghost" onClick={() => void fetchMore()}>Load more</button>
@@ -873,6 +892,7 @@ export function App() {
                   result={result}
                   edits={edits}
                   filterText={filterText}
+                  transposed={transposed}
                   onEdit={addEdit}
                   onInsertEdit={editInsert}
                   onFocusRow={(row, col) => setFocus({ row, col })}
@@ -880,6 +900,7 @@ export function App() {
                     gridApi.current = api
                   }}
                   onNeedMore={() => void fetchMore()}
+                  onCopied={notify}
                 />
               ) : result ? (
                 <div className="q-empty">

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { AgGridReact } from 'ag-grid-react'
 import {
   AllCommunityModule,
@@ -45,11 +45,15 @@ interface Props {
   result: QueryResult
   edits: GridEdits
   filterText: string
+  /** rows become columns: one grid row per result column, read-only */
+  transposed: boolean
   onEdit: (edit: CellEdit) => void
   onInsertEdit: (rowId: string, columnIndex: number, value: Cell) => void
   onFocusRow: (rowIndex: number | null, columnIndex: number | null) => void
   onApiReady: (api: GridApi | null) => void
   onNeedMore: () => void
+  /** a cell was copied to the clipboard; the label feeds the status bar */
+  onCopied: (label: string) => void
 }
 
 /** `__i` >= 0 indexes result rows; negative values address staged inserts. */
@@ -62,9 +66,10 @@ interface RowData {
 const insertIndex = (i: number): number => -(i + 1)
 
 export function ResultGrid({
-  result, edits, filterText, onEdit, onInsertEdit, onFocusRow, onApiReady, onNeedMore
+  result, edits, filterText, transposed, onEdit, onInsertEdit, onFocusRow, onApiReady, onNeedMore, onCopied
 }: Props) {
   const loading = useRef(false)
+  const api = useRef<GridApi | null>(null)
 
   const editedKeys = useMemo(
     () => new Set(edits.updates.map((e) => `${e.rowIndex}:${e.columnIndex}`)),
@@ -79,6 +84,18 @@ export function ResultGrid({
     const pendingCells = new Map<string, Cell>(
       edits.updates.map((e) => [`${e.rowIndex}:${e.columnIndex}`, e.newValue])
     )
+    if (transposed) {
+      // One grid row per result column; result rows fan out as r0..rN. Staged
+      // inserts are grid-born and stay out of the read-only transposed view.
+      return result.fields.map((f, c) => {
+        const o: RowData = { __i: c, col: f.name }
+        result.rows.forEach((row, i) => {
+          const pending = pendingCells.get(`${i}:${c}`)
+          o[`r${i}`] = pending !== undefined ? pending : row[c]
+        })
+        return o
+      })
+    }
     const existing = result.rows.map((row, i) => {
       const o: RowData = { __i: i }
       row.forEach((cell, c) => {
@@ -95,7 +112,7 @@ export function ResultGrid({
       return o
     })
     return [...existing, ...staged]
-  }, [result.rows, result.fields, edits.inserts, edits.updates])
+  }, [result.rows, result.fields, edits.inserts, edits.updates, transposed])
 
   const editableColumns = useMemo(() => {
     if (!result.editable) return new Set<number>()
@@ -115,6 +132,29 @@ export function ResultGrid({
   }, [result.editable])
 
   const columnDefs = useMemo<ColDef<RowData>[]>(() => {
+    if (transposed) {
+      const header: ColDef<RowData> = {
+        field: 'col',
+        headerName: 'Column',
+        pinned: 'left',
+        sortable: false,
+        resizable: true,
+        minWidth: 90,
+        cellClass: 'row-number'
+      }
+      const perRow: ColDef<RowData>[] = result.rows.map((_row, i) => ({
+        field: `r${i}`,
+        headerName: String(i + 1),
+        sortable: false,
+        resizable: true,
+        minWidth: 60,
+        valueFormatter: (p) => (p.value === null || p.value === undefined ? 'NULL' : String(p.value)),
+        cellClassRules: {
+          'cell-null': (p) => p.value === null || p.value === undefined
+        }
+      }))
+      return [header, ...perRow]
+    }
     const cols: ColDef<RowData>[] = result.fields.map((f, i) => ({
       field: `c${i}`,
       headerName: f.name,
@@ -159,7 +199,7 @@ export function ResultGrid({
       type: 'rightAligned'
     })
     return cols
-  }, [result.fields, editableColumns, insertableColumns, editedKeys, deleted])
+  }, [result.fields, result.rows, editableColumns, insertableColumns, editedKeys, deleted, transposed])
 
   const onCellValueChanged = useCallback(
     (e: CellValueChangedEvent<RowData>) => {
@@ -184,18 +224,27 @@ export function ResultGrid({
       const row = e.api.getDisplayedRowAtIndex(e.rowIndex ?? -1)
       const data = row?.data as RowData | undefined
       const field = typeof e.column === 'object' && e.column ? e.column.getColId() : null
+      if (transposed) {
+        // Grid rows are result columns here, so the axes swap back on the way out.
+        onFocusRow(
+          field?.startsWith('r') ? Number(field.slice(1)) : null,
+          data ? data.__i : null
+        )
+        return
+      }
       onFocusRow(
         data ? data.__i : null,
         field?.startsWith('c') ? Number(field.slice(1)) : null
       )
     },
-    [onFocusRow]
+    [onFocusRow, transposed]
   )
 
   // Fetch the next chunk when the viewport nears the end of what we have.
   const onBodyScrollEnd = useCallback(
     (e: BodyScrollEndEvent) => {
-      if (result.complete || loading.current) return
+      // Transposed, more rows arrive as columns; vertical scroll means nothing.
+      if (transposed || result.complete || loading.current) return
       if (e.api.getLastDisplayedRowIndex() >= rowData.length - 20) {
         loading.current = true
         Promise.resolve(onNeedMore()).finally(() => {
@@ -203,20 +252,52 @@ export function ResultGrid({
         })
       }
     },
-    [result.complete, rowData.length, onNeedMore]
+    [transposed, result.complete, rowData.length, onNeedMore]
   )
 
   const onGridReady = useCallback(
     (e: GridReadyEvent) => {
       e.api.autoSizeAllColumns(false)
+      api.current = e.api
       onApiReady(e.api)
       if (import.meta.env.DEV) (window as unknown as Record<string, unknown>).__grid = e.api
     },
     [onApiReady]
   )
 
+  // Column widths sized for one orientation are wrong for the other. Deferred
+  // a frame so AG Grid has applied the new column defs before sizing them.
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => api.current?.autoSizeAllColumns(false))
+    return () => cancelAnimationFrame(frame)
+  }, [transposed])
+
+  // Cmd/Ctrl+C on a focused cell copies just that cell. A drag-selection of
+  // text keeps the browser's own copy, and an open cell editor is left alone.
+  const onKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'c' || e.shiftKey || e.altKey) return
+      const target = e.target as HTMLElement
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return
+      if (window.getSelection()?.toString()) return
+      const grid = api.current
+      const cell = grid?.getFocusedCell()
+      if (!grid || !cell) return
+      const row = grid.getDisplayedRowAtIndex(cell.rowIndex)
+      const data = row?.data as RowData | undefined
+      const colId = cell.column.getColId()
+      // The row-number column carries no field; there is nothing to copy there.
+      if (!data || !(colId in data)) return
+      e.preventDefault()
+      const value = data[colId]
+      void navigator.clipboard.writeText(value === null || value === undefined ? '' : String(value))
+      onCopied('1 cell')
+    },
+    [onCopied]
+  )
+
   return (
-    <div style={{ position: 'absolute', inset: 0 }}>
+    <div style={{ position: 'absolute', inset: 0 }} onKeyDown={onKeyDown}>
       <AgGridReact<RowData>
         theme={gridTheme()}
         rowData={rowData}

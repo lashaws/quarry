@@ -48,6 +48,29 @@ export function disposeModel(tabId: string): void {
   models.delete(tabId)
 }
 
+/**
+ * True while a completion snippet's placeholder is active. Accepting a table
+ * completion leaves its generated alias selected (`${1:alias}`), and treating
+ * that selection as "run the selection" sent the bare alias to Postgres —
+ * `syntax error at or near "u"`.
+ */
+function inSnippet(ed: monaco.editor.IStandaloneCodeEditor): boolean {
+  const c = ed.getContribution('snippetController2') as { isInSnippet?: () => boolean } | null
+  try {
+    return !!c?.isInSnippet?.()
+  } catch {
+    return false
+  }
+}
+
+/** The user's own selection, ignoring snippet placeholders. */
+function userSelection(ed: monaco.editor.IStandaloneCodeEditor): string {
+  const model = ed.getModel()
+  const selection = ed.getSelection()
+  if (!model || !selection || selection.isEmpty() || inSnippet(ed)) return ''
+  return model.getValueInRange(selection)
+}
+
 export function SqlEditor({
   tabId, value, catalog, onChange, onExecute, onRunScript, onExplain, onFormat,
   onGoToDefinition, onReady, errorPosition, errorMessage
@@ -92,8 +115,7 @@ export function SqlEditor({
         const model = ed.getModel()
         const pos = ed.getPosition()
         if (!model) return ''
-        const selection = ed.getSelection()
-        const selected = selection && !selection.isEmpty() ? model.getValueInRange(selection) : ''
+        const selected = userSelection(ed)
         if (selected.trim()) return selected
         if (!pos) return model.getValue()
         return statementAt(model.getValue(), model.getOffsetAt(pos))?.text ?? model.getValue()
@@ -104,16 +126,64 @@ export function SqlEditor({
 
     ed.onDidChangeModelContent(() => handlers.current.onChange(ed.getValue()))
 
-    // Cmd+Enter runs the statement under the caret, not the whole buffer.
+    // Cmd+Enter is a two-step run: the first press selects the statement under
+    // the caret so what will execute is visible; plain Enter (or Cmd+Enter
+    // again) then runs exactly the highlighted text. Any other keystroke,
+    // click, or edit cancels the armed run and Enter goes back to newline.
+    let armed: string | null = null
+    let arming = false
+    const disarm = (): void => {
+      armed = null
+    }
+
     ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
       const model = ed.getModel()
       const pos = ed.getPosition()
       if (!model || !pos) return
-      const selection = ed.getSelection()
-      const selected = selection && !selection.isEmpty() ? model.getValueInRange(selection) : ''
-      const sql = selected.trim() || statementAt(model.getValue(), model.getOffsetAt(pos))?.text || ''
-      if (sql) handlers.current.onExecute(sql)
+      // A selection the user made (or the previous Cmd+Enter armed) runs as-is.
+      const selected = userSelection(ed).trim()
+      if (selected) {
+        disarm()
+        handlers.current.onExecute(selected)
+        return
+      }
+      const stmt = statementAt(model.getValue(), model.getOffsetAt(pos))
+      if (!stmt?.text || stmt.start >= stmt.end) return
+      const from = model.getPositionAt(stmt.start)
+      const to = model.getPositionAt(stmt.end)
+      arming = true
+      ed.setSelection(new monaco.Selection(from.lineNumber, from.column, to.lineNumber, to.column))
+      arming = false
+      armed = stmt.text
     })
+
+    ed.onKeyDown((e) => {
+      if (!armed) return
+      if (
+        e.keyCode === monaco.KeyCode.Enter &&
+        !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey
+      ) {
+        e.preventDefault()
+        e.stopPropagation()
+        const sql = armed
+        disarm()
+        // Collapse the selection so the next keystroke types instead of
+        // replacing the statement that just ran.
+        const sel = ed.getSelection()
+        if (sel) ed.setSelection(new monaco.Selection(sel.endLineNumber, sel.endColumn, sel.endLineNumber, sel.endColumn))
+        handlers.current.onExecute(sql)
+      } else if (e.keyCode === monaco.KeyCode.Escape) {
+        disarm()
+      }
+    })
+    // Moving the caret, editing, clicking, or leaving the editor all cancel the
+    // pending run; only the arming setSelection above is exempt.
+    ed.onDidChangeCursorSelection(() => {
+      if (!arming) disarm()
+    })
+    ed.onDidChangeModelContent(disarm)
+    ed.onMouseDown(disarm)
+    ed.onDidBlurEditorWidget(disarm)
 
     ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | monaco.KeyCode.KeyL, () =>
       handlers.current.onFormat()
