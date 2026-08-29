@@ -472,6 +472,45 @@ export function App() {
   const activeTabIdRef = useRef<string | null>(null)
   activeTabIdRef.current = activeTabId
 
+  /* ---------- Ctrl+Tab toggles back to the previously active tab ---------- */
+  const prevTabId = useRef<string | null>(null)
+  const lastSeenTabId = useRef<string | null>(null)
+  useEffect(() => {
+    if (lastSeenTabId.current && lastSeenTabId.current !== activeTabId) {
+      prevTabId.current = lastSeenTabId.current
+    }
+    lastSeenTabId.current = activeTabId
+  }, [activeTabId])
+
+  const tabsRef = useRef<EditorTab[]>([])
+  tabsRef.current = tabs
+  const modalKindRef = useRef<Modal['kind']>('none')
+  modalKindRef.current = modal.kind
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (!e.ctrlKey || e.key !== 'Tab' || e.metaKey || e.altKey || e.shiftKey) return
+      if (modalKindRef.current !== 'none') return
+      e.preventDefault()
+      e.stopPropagation()
+      const ts = tabsRef.current
+      if (ts.length < 2) return
+      const current = activeTabIdRef.current
+      const prev = prevTabId.current
+      // MRU toggle, the way ⌃Tab flips between two consoles in an IDE. When
+      // the previous tab is gone (closed, or never existed), fall back to the
+      // next tab in strip order so the key still does something useful.
+      const target =
+        prev && prev !== current && ts.some((t) => t.id === prev)
+          ? prev
+          : ts[(ts.findIndex((t) => t.id === current) + 1) % ts.length].id
+      setActiveTabId(target)
+    }
+    // Capture phase so Monaco and the grid never see the keystroke.
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [])
+
   const formatSql = useCallback(() => {
     if (!activeTab?.sql.trim()) return
     try {
@@ -567,7 +606,11 @@ export function App() {
     'menu:newTab': addTab,
     'menu:closeTab': () => activeTabId && closeTab(activeTabId),
     'menu:newConnection': () => setModal({ kind: 'connection', cfg: null }),
-    'menu:execute': () => void runOn(currentStatement(), 'statement'),
+    // Cmd+Enter lands here (the native menu owns the accelerator): first press
+    // highlights the statement, Enter or a second Cmd+Enter runs it.
+    'menu:execute': () => {
+      if (!editorApi.current?.armOrRun()) void runOn(currentStatement(), 'statement')
+    },
     'menu:runScript': () => activeTab?.sql && void runOn(activeTab.sql, 'script'),
     'menu:explain': () => void runOn(currentStatement(), 'explain'),
     'menu:explainAnalyze': () => void runOn(currentStatement(), 'explainAnalyze'),

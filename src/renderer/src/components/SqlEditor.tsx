@@ -9,6 +9,14 @@ import { defineTheme, LANGUAGE, monaco, registerCompletion, THEME } from '../edi
 export interface EditorApi {
   /** the selection when there is one, else the statement under the caret */
   currentStatement(): string
+  /**
+   * Cmd+Enter semantics: run the selection if there is one, otherwise
+   * highlight the statement under the caret so plain Enter runs it. Returns
+   * false when there is nothing to run. Exposed because the native menu owns
+   * the Cmd+Enter accelerator on macOS — the keystroke arrives as menu:execute
+   * IPC, never as an editor key event.
+   */
+  armOrRun(): boolean
 }
 
 interface Props {
@@ -108,6 +116,41 @@ export function SqlEditor({
     })
     editor.current = ed
 
+    // Cmd+Enter is a two-step run: the first press selects the statement under
+    // the caret so what will execute is visible; plain Enter (or Cmd+Enter
+    // again) then runs exactly the highlighted text. Any other keystroke,
+    // click, or edit cancels the armed run and Enter goes back to newline.
+    let armed: string | null = null
+    let arming = false
+    const disarm = (): void => {
+      armed = null
+    }
+
+    const armOrRun = (): boolean => {
+      const model = ed.getModel()
+      const pos = ed.getPosition()
+      if (!model || !pos) return false
+      // A selection the user made (or the previous Cmd+Enter armed) runs as-is.
+      const selected = userSelection(ed).trim()
+      if (selected) {
+        disarm()
+        handlers.current.onExecute(selected)
+        return true
+      }
+      const stmt = statementAt(model.getValue(), model.getOffsetAt(pos))
+      if (!stmt?.text || stmt.start >= stmt.end) return false
+      const from = model.getPositionAt(stmt.start)
+      const to = model.getPositionAt(stmt.end)
+      // Focus first: arming from outside the editor (menu, grid focused) must
+      // not be undone by the blur/selection listeners below.
+      ed.focus()
+      arming = true
+      ed.setSelection(new monaco.Selection(from.lineNumber, from.column, to.lineNumber, to.column))
+      arming = false
+      armed = stmt.text
+      return true
+    }
+
     // Exposed through a prop, not `window`: a dev-only global would leave the
     // packaged build silently running the whole buffer instead of one statement.
     ready.current({
@@ -119,42 +162,19 @@ export function SqlEditor({
         if (selected.trim()) return selected
         if (!pos) return model.getValue()
         return statementAt(model.getValue(), model.getOffsetAt(pos))?.text ?? model.getValue()
-      }
+      },
+      armOrRun
     })
 
     if (import.meta.env.DEV) (window as unknown as Record<string, unknown>).__editor = ed
 
     ed.onDidChangeModelContent(() => handlers.current.onChange(ed.getValue()))
 
-    // Cmd+Enter is a two-step run: the first press selects the statement under
-    // the caret so what will execute is visible; plain Enter (or Cmd+Enter
-    // again) then runs exactly the highlighted text. Any other keystroke,
-    // click, or edit cancels the armed run and Enter goes back to newline.
-    let armed: string | null = null
-    let arming = false
-    const disarm = (): void => {
-      armed = null
-    }
-
+    // Fallback for when the native menu's Cmd+Enter accelerator is not in
+    // play (Linux without a menu, detached windows); on macOS the menu wins
+    // and the same logic arrives through menu:execute → EditorApi.armOrRun.
     ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
-      const model = ed.getModel()
-      const pos = ed.getPosition()
-      if (!model || !pos) return
-      // A selection the user made (or the previous Cmd+Enter armed) runs as-is.
-      const selected = userSelection(ed).trim()
-      if (selected) {
-        disarm()
-        handlers.current.onExecute(selected)
-        return
-      }
-      const stmt = statementAt(model.getValue(), model.getOffsetAt(pos))
-      if (!stmt?.text || stmt.start >= stmt.end) return
-      const from = model.getPositionAt(stmt.start)
-      const to = model.getPositionAt(stmt.end)
-      arming = true
-      ed.setSelection(new monaco.Selection(from.lineNumber, from.column, to.lineNumber, to.column))
-      arming = false
-      armed = stmt.text
+      armOrRun()
     })
 
     ed.onKeyDown((e) => {
