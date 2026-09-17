@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { ConnectionConfig } from '@shared/ipc'
+import type { ConnectionConfig, SslMode } from '@shared/ipc'
 
 interface Props {
   initial: ConnectionConfig | null
@@ -16,8 +16,11 @@ const blank = (): ConnectionConfig => ({
   port: 5432,
   database: '',
   user: '',
-  ssl: false
+  sslMode: 'disable'
 })
+
+/** Legacy `ssl: true` meant encrypted-but-unverified, which is exactly `require`. */
+const modeOf = (c: ConnectionConfig): SslMode => c.sslMode ?? (c.ssl === true ? 'require' : 'disable')
 
 export function ConnectionDialog({ initial, onCancel, onSaved, onDeleted }: Props) {
   const [cfg, setCfg] = useState<ConnectionConfig>(initial ?? blank())
@@ -117,15 +120,38 @@ export function ConnectionDialog({ initial, onCancel, onSaved, onDeleted }: Prop
               />
             </div>
           </div>
-          <label className="q-note" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <input
-              type="checkbox"
-              style={{ width: 'auto' }}
-              checked={!!cfg.ssl}
-              onChange={(e) => set('ssl', e.target.checked)}
-            />
-            Use SSL
-          </label>
+          <div className="q-row">
+            <div>
+              <label>SSL</label>
+              <select
+                value={modeOf(cfg)}
+                onChange={(e) => {
+                  const mode = e.target.value as SslMode
+                  // Drop the legacy flag on edit so the two cannot disagree later.
+                  setCfg((c) => ({ ...c, sslMode: mode, ssl: undefined }))
+                }}
+              >
+                <option value="disable">disable — plaintext</option>
+                <option value="require">require — encrypted, certificate not checked</option>
+                <option value="verify-full">verify-full — encrypted and verified</option>
+              </select>
+            </div>
+            <div>
+              <label>Verify certificate as</label>
+              <input
+                value={cfg.sslServerName ?? ''}
+                placeholder={cfg.host || 'same as host'}
+                disabled={modeOf(cfg) !== 'verify-full'}
+                onChange={(e) => set('sslServerName', e.target.value)}
+              />
+            </div>
+          </div>
+          {modeOf(cfg) === 'verify-full' && (
+            <div className="q-note">
+              Reaching the database through a port-forward? Put the real endpoint name here —
+              the certificate is checked against it while the socket still goes to {cfg.host || 'the host'}.
+            </div>
+          )}
           <div className="q-note">Passwords are stored in the macOS Keychain, never on disk in the clear.</div>
           {note && <div className={`q-note ${note.ok ? 'ok' : 'bad'}`}>{note.text}</div>}
         </div>

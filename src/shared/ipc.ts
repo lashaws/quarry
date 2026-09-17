@@ -2,6 +2,8 @@
 
 export type Engine = 'postgres' | 'sqlite'
 
+export type SslMode = 'disable' | 'require' | 'verify-full'
+
 export interface ConnectionConfig {
   id: string
   name: string
@@ -11,7 +13,24 @@ export interface ConnectionConfig {
   port?: number
   database?: string
   user?: string
+  /**
+   * Legacy flag: encrypted but unverified. Kept so connections saved before
+   * sslMode existed keep working; `sslMode` wins when both are present.
+   */
   ssl?: boolean
+  /**
+   * disable    - plaintext
+   * require    - encrypted, certificate NOT checked (what `ssl: true` always did)
+   * verify-full- encrypted, full chain + hostname checked
+   */
+  sslMode?: SslMode
+  /**
+   * Verify the certificate against this hostname instead of `host`. Set it when
+   * reaching a database through a port-forward: you connect to `localhost`, which
+   * no RDS certificate carries, but the server still presents its real name. This
+   * is what lets verify-full work through a tunnel without editing /etc/hosts.
+   */
+  sslServerName?: string
   /** sqlite */
   file?: string
   /** UI accent, DataGrip-style colour coding per environment */
@@ -125,6 +144,8 @@ export interface ConnectionState {
   txStatus: TxStatus
   serverVersion?: string
   error?: string
+  /** Set when the connection is encrypted but not verified despite asking for verify-full. */
+  sslWarning?: string
 }
 
 /** One staged cell edit, before submit. */
@@ -189,6 +210,8 @@ export interface Api {
     disconnect(id: string): Promise<void>
     state(id: string): Promise<ConnectionState>
     importFromDBeaver(): Promise<ConnectionConfig[]>
+    /** Main reports a connection dropping or coming back on its own. Returns the unsubscribe. */
+    onChanged(cb: (state: ConnectionState) => void): () => void
   }
   catalog: {
     get(connectionId: string, refresh?: boolean): Promise<Catalog>
@@ -290,6 +313,7 @@ export const IPC = {
   connectionsConnect: 'connections:connect',
   connectionsDisconnect: 'connections:disconnect',
   connectionsState: 'connections:state',
+  connectionsChanged: 'connections:changed',
   connectionsImportDBeaver: 'connections:importDBeaver',
   catalogGet: 'catalog:get',
   queryRun: 'query:run',

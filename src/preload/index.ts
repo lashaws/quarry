@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { Api, GridEdits, ConnectionConfig, QueryRequest, TxMode, WorkspaceState } from '@shared/ipc'
+import type { Api, GridEdits, ConnectionConfig, ConnectionState, QueryRequest, TxMode, WorkspaceState } from '@shared/ipc'
 import { IPC } from '@shared/ipc'
 
 const invoke = ipcRenderer.invoke.bind(ipcRenderer)
@@ -17,7 +17,12 @@ const api: Api = {
     connect: (id: string) => invoke(IPC.connectionsConnect, id),
     disconnect: (id: string) => invoke(IPC.connectionsDisconnect, id),
     state: (id: string) => invoke(IPC.connectionsState, id),
-    importFromDBeaver: () => invoke(IPC.connectionsImportDBeaver)
+    importFromDBeaver: () => invoke(IPC.connectionsImportDBeaver),
+    onChanged: (cb: (state: ConnectionState) => void) => {
+      const listener = (_e: unknown, state: ConnectionState): void => cb(state)
+      ipcRenderer.on(IPC.connectionsChanged, listener)
+      return () => ipcRenderer.removeListener(IPC.connectionsChanged, listener)
+    }
   },
   catalog: {
     get: (id: string, refresh?: boolean) => invoke(IPC.catalogGet, id, refresh)

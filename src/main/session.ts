@@ -35,10 +35,47 @@ export class Session {
   private catalogs = new Map<string, Catalog>()
   private queries = new Map<string, ActiveQuery>()
 
-  private conn(id: string): PgConnection {
+  /** Pushed to the renderer whenever a connection's state changes underneath it. */
+  onStateChange?: (state: ConnectionState) => void
+
+  /**
+   * The live connection for `id`, re-established when the server or the
+   * network dropped it.
+   *
+   * A dropped socket used to leave the sidebar reading "connected" while every
+   * statement failed with "Not connected" until the app was restarted: nothing
+   * told the renderer, and nothing reconnected. Now the drop is reported the
+   * moment it happens and the next statement dials again. The one thing that
+   * cannot be replayed is an open transaction, so that is reported instead of
+   * silently running the statement outside it.
+   */
+  private async conn(id: string): Promise<PgConnection> {
     const c = this.connections.get(id)
-    if (!c || !c.connected) throw new Error('Not connected')
+    if (!c) throw new Error('Not connected')
+    if (c.connected) return c
+    try {
+      await c.connect()
+    } catch (err) {
+      throw new Error(
+        `The connection to ${c.config.name} was lost and could not be re-established: ${(err as Error).message}`
+      )
+    }
+    this.onStateChange?.(this.state(id))
+    if (c.takeLostTransaction()) {
+      throw new Error(
+        `The connection to ${c.config.name} dropped while a transaction was open, so the server rolled back its uncommitted changes. ` +
+          'It has been re-established; run the statement again.'
+      )
+    }
     return c
+  }
+
+  private track(cfg: ConnectionConfig, conn: PgConnection): void {
+    this.connections.set(cfg.id, conn)
+    conn.onLost = () => {
+      // Only if this is still the connection the session knows by that id.
+      if (this.connections.get(cfg.id) === conn) this.onStateChange?.(this.state(cfg.id))
+    }
   }
 
   state(id: string): ConnectionState {
@@ -49,7 +86,8 @@ export class Session {
       connected: c.connected,
       txMode: c.txMode,
       txStatus: c.txStatus,
-      serverVersion: c.serverVersion
+      serverVersion: c.serverVersion,
+      sslWarning: c.sslWarning
     }
   }
 
@@ -67,7 +105,7 @@ export class Session {
 
     const conn = new PgConnection(cfg, password)
     await conn.connect()
-    this.connections.set(cfg.id, conn)
+    this.track(cfg, conn)
     return this.state(cfg.id)
   }
 
@@ -83,7 +121,8 @@ export class Session {
     const conn = new PgConnection(cfg, password ?? getSecret(cfg.id))
     try {
       await conn.connect()
-      return { ok: true, message: `Connected to PostgreSQL ${conn.serverVersion ?? ''}`.trim() }
+      const message = `Connected to PostgreSQL ${conn.serverVersion ?? ''}`.trim()
+      return { ok: true, message: conn.sslWarning ? `${message}. ${conn.sslWarning}` : message }
     } catch (err) {
       return { ok: false, message: (err as Error).message }
     } finally {
@@ -94,7 +133,7 @@ export class Session {
   async catalog(id: string, refresh = false): Promise<Catalog> {
     const cached = this.catalogs.get(id)
     if (cached && !refresh) return cached
-    const conn = this.conn(id)
+    const conn = await this.conn(id)
     if (refresh) await conn.refreshTableNames()
     const cat = await introspect(conn)
     this.catalogs.set(id, cat)
@@ -125,7 +164,7 @@ export class Session {
   }
 
   async run(req: QueryRequest, connectionName: string): Promise<QueryResult> {
-    const conn = this.conn(req.connectionId)
+    const conn = await this.conn(req.connectionId)
     const chunkSize = req.chunkSize ?? DEFAULT_CHUNK
     const queryId = randomUUID()
     const startedAt = Date.now()
@@ -200,7 +239,7 @@ export class Session {
     if (!q.cursor || q.complete) {
       return this.snapshot(q, 0)
     }
-    const conn = this.conn(q.connectionId)
+    const conn = await this.conn(q.connectionId)
     const started = Date.now()
     // Another statement may have closed the cursor to get at the connection.
     if (!conn.isCursorActive(q.cursor)) {
@@ -263,7 +302,7 @@ export class Session {
     const q = this.queries.get(queryId)
     if (!q) throw new Error('Query is no longer active')
     if (!q.editable) throw new Error('This result set is not editable')
-    const conn = this.conn(q.connectionId)
+    const conn = await this.conn(q.connectionId)
     const changes = buildChanges(q.editable, q.rows, edits)
 
     // In manual mode the user's own transaction is already open and stays open,
@@ -318,7 +357,7 @@ export class Session {
     const prefix = analyze
       ? 'EXPLAIN (ANALYZE, BUFFERS, VERBOSE, COSTS, TIMING, FORMAT JSON) '
       : 'EXPLAIN (VERBOSE, COSTS, FORMAT JSON) '
-    const conn = this.conn(connectionId)
+    const conn = await this.conn(connectionId)
     // ANALYZE executes the statement for real, so it must join the transaction.
     const rows = analyze
       ? await conn.queryInTx(prefix + sql)
@@ -342,7 +381,7 @@ export class Session {
     if (!q) throw new Error(`No such diagnostic: ${key}`)
 
     if (q.requires) {
-      const rows = await this.conn(connectionId).query(
+      const rows = await (await this.conn(connectionId)).query(
         'SELECT 1 FROM pg_extension WHERE extname = $1',
         [q.requires]
       )
@@ -377,17 +416,17 @@ export class Session {
   }
 
   async setTxMode(id: string, mode: TxMode): Promise<ConnectionState> {
-    await this.conn(id).setTxMode(mode)
+    await (await this.conn(id)).setTxMode(mode)
     return this.state(id)
   }
 
   async commit(id: string): Promise<ConnectionState> {
-    await this.conn(id).commit()
+    await (await this.conn(id)).commit()
     return this.state(id)
   }
 
   async rollback(id: string): Promise<ConnectionState> {
-    await this.conn(id).rollback()
+    await (await this.conn(id)).rollback()
     return this.state(id)
   }
 
@@ -401,7 +440,7 @@ export class Session {
   async exportCsv(queryId: string, path: string): Promise<{ rows: number }> {
     const q = this.queries.get(queryId)
     if (!q) throw new Error('Query is no longer active')
-    const conn = this.conn(q.connectionId)
+    const conn = await this.conn(q.connectionId)
     const out = createWriteStream(path, { encoding: 'utf8' })
 
     const write = async (chunk: string): Promise<void> => {

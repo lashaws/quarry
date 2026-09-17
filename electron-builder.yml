@@ -10,6 +10,12 @@ files:
   - out/**/*
   - package.json
 
+# The Amazon RDS global CA bundle, so verify-full can check an RDS instance
+# certificate. Node's default trust store does not carry the regional RDS roots.
+extraResources:
+  - from: resources/rds-global-bundle.pem
+    to: rds-global-bundle.pem
+
 mac:
   category: public.app-category.developer-tools
   icon: build/icon.icns

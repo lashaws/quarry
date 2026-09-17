@@ -11,6 +11,10 @@ import { readJson, writeJson } from './store/json'
 const dirname = fileURLToPath(new URL('.', import.meta.url))
 const session = new Session()
 let mainWindow: BrowserWindow | null = null
+// A connection dropped by the server or the network, or dialled again on the
+// next statement. Without this the sidebar kept showing the last state it was
+// handed and every statement failed with "Not connected" until a restart.
+session.onStateChange = (state) => mainWindow?.webContents.send(IPC.connectionsChanged, state)
 /** Set once the user has answered the uncommitted-transaction prompt. */
 let transactionsResolved = false
 

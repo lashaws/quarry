@@ -1,6 +1,9 @@
 import pg from 'pg'
 import Cursor from 'pg-cursor'
 import { maskLiterals } from '@shared/sql'
+import { lookup } from 'node:dns/promises'
+import { buildSslOptions, needsAddressDial } from './ssl'
+import { readCaBundle } from './caBundle'
 import type { Cell, ConnectionConfig, QueryField, QueryError, TxMode, TxStatus } from '@shared/ipc'
 
 const { Client } = pg
@@ -40,6 +43,21 @@ export class PgConnection {
   /** The one open result cursor, if any. It owns the connection's protocol state. */
   private activeCursor: Cursor | null = null
 
+  /** Non-fatal TLS note (verify-full downgraded, say). Set when options are built. */
+  sslWarning?: string
+
+  /**
+   * Fires when the server or the network drops the connection out from under
+   * us: an SSM tunnel restarted, an idle timeout, a laptop that changed
+   * networks. The session forwards it to the renderer, whose sidebar otherwise
+   * keeps reading "connected" against a socket that is gone.
+   */
+  onLost?: (lostTransaction: boolean) => void
+  /** True when the drop took an open transaction with it; see takeLostTransaction. */
+  private lostTransaction = false
+  /** Address the live socket was dialled to. The cancel side-connection reuses it. */
+  private dialledHost?: string
+
   txMode: TxMode = 'auto'
   txStatus: TxStatus = 'idle'
   serverVersion?: string
@@ -56,25 +74,60 @@ export class PgConnection {
   }
 
   private clientOptions(): pg.ClientConfig {
+    const { ssl, warning } = buildSslOptions(this.config, readCaBundle)
+    this.sslWarning = warning
     return {
       host: this.config.host,
       port: this.config.port ?? 5432,
       database: this.config.database,
       user: this.config.user,
       password: this.password,
-      ssl: this.config.ssl ? { rejectUnauthorized: false } : undefined,
-      application_name: 'Quarry'
+      ssl,
+      application_name: 'Quarry',
+      // A dead tunnel leaves a half-open socket that no packet ever reports on.
+      // Keepalives turn that into an error event on their own, instead of the
+      // first statement hanging until the TCP stack gives up on the write.
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10_000
+    }
+  }
+
+  /**
+   * Where the socket goes. With an SNI override this is the resolved address,
+   * not the name, or pg would verify the certificate against the name we dial
+   * (see needsAddressDial). IPv4 first: the SSM port-forward and most local
+   * tunnels listen on 127.0.0.1 only, and "localhost" resolves to ::1 first on
+   * a default macOS setup.
+   */
+  private async dialHost(): Promise<string> {
+    const host = this.config.host.trim()
+    if (!needsAddressDial(this.config)) return host
+    try {
+      return (await lookup(host, { family: 4 })).address
+    } catch {
+      return (await lookup(host)).address
     }
   }
 
   async connect(): Promise<void> {
     if (this.client) return
-    const client = new Client(this.clientOptions())
+    const options = this.clientOptions()
+    options.host = this.dialledHost = await this.dialHost()
+    const client = new Client(options)
     await client.connect()
     this.client = client
+    this.activeCursor = null
+    this.notices = []
     client.on('error', () => {
+      // pg reports one drop twice (the FATAL, then the socket closing), and a
+      // late report from a client we have already replaced must not kill the
+      // new one.
+      if (this.client !== client) return
+      this.lostTransaction = this.txStatus !== 'idle'
       this.client = null
+      this.activeCursor = null
       this.txStatus = 'idle'
+      this.onLost?.(this.lostTransaction)
     })
     // RAISE NOTICE output is invisible unless we collect it.
     client.on('notice', (n: { severity?: string; message?: string }) => {
@@ -145,16 +198,35 @@ export class PgConnection {
     return next
   }
 
+  /**
+   * Whether the connection dropped while a transaction was open, cleared on
+   * read. The server rolled that work back, so the next statement must not run
+   * as if nothing happened.
+   */
+  takeLostTransaction(): boolean {
+    const lost = this.lostTransaction
+    this.lostTransaction = false
+    return lost
+  }
+
   /** Closes the open cursor, if any. Called from inside the queue only. */
   private async releaseCursor(): Promise<void> {
     const cursor = this.activeCursor
     if (!cursor) return
     this.activeCursor = null
+    const client = this.client
     await new Promise<void>((resolve) => {
-      try {
-        cursor.close(() => resolve())
-      } catch {
+      // pg-cursor's close callback waits for ReadyForQuery, which a dead
+      // connection never sends; the client's 'end' is what arrives instead.
+      const done = (): void => {
+        client?.removeListener('end', done)
         resolve()
+      }
+      client?.once('end', done)
+      try {
+        cursor.close(done)
+      } catch {
+        done()
       }
     })
   }
@@ -172,7 +244,7 @@ export class PgConnection {
   /** Cancel the in-flight statement from a side connection, as psql's Ctrl-C does. */
   async cancelRunning(): Promise<void> {
     if (this.backendPid == null) return
-    const side = new Client(this.clientOptions())
+    const side = new Client({ ...this.clientOptions(), host: this.dialledHost ?? this.config.host })
     try {
       await side.connect()
       await side.query('SELECT pg_cancel_backend($1)', [this.backendPid])

@@ -155,6 +155,14 @@ export function App() {
     return st
   }, [])
 
+  // Main reports a connection dropping (a restarted tunnel, an idle timeout)
+  // or coming back, so the sidebar tracks the socket rather than the last
+  // answer it was handed.
+  useEffect(
+    () => window.api.connections.onChanged((st) => setStates((s) => ({ ...s, [st.id]: st }))),
+    []
+  )
+
   const connect = useCallback(
     async (id: string) => {
       setBusy(true)
@@ -261,6 +269,8 @@ export function App() {
         setPlan(null)
         setResults([errorResult((err as Error).message)])
         setActiveResult(0)
+        // A failure here may be the connection itself; make the sidebar tell the truth.
+        await refreshState(connectionId).catch(() => undefined)
       } finally {
         setBusy(false)
       }
@@ -285,11 +295,12 @@ export function App() {
       } catch (err) {
         setResults([errorResult((err as Error).message)])
         setActiveResult(0)
+        await refreshState(connectionId).catch(() => undefined)
       } finally {
         setBusy(false)
       }
     },
-    [activeTab, activeConnectionId, connectedIds, connect, results, releaseResults, afterRun]
+    [activeTab, activeConnectionId, connectedIds, connect, results, releaseResults, afterRun, refreshState]
   )
 
   /** The statement under the caret, or the selection when there is one. */

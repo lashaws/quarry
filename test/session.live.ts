@@ -6,6 +6,7 @@
 import { Session } from '../src/main/session.ts'
 import { saveConnection } from '../src/main/store/connections.ts'
 import { testConnection } from './fixture.ts'
+import { PgConnection } from '../src/main/drivers/postgres.ts'
 import type { QueryResult } from '@shared/ipc'
 
 type QueryResultLike = Pick<QueryResult, 'fields' | 'rows'>
@@ -299,6 +300,48 @@ async function main(): Promise<void> {
     const locks = await session.dba(cfg.id, 'locks', 'test')
     ok('locks distinguishes locktype from relation',
        col(locks, 'locktype') >= 0 && col(locks, 'relation') >= 0)
+  }
+
+  console.log('\nlost connection')
+  {
+    // Kill our own backend from a side connection: what a restarted SSM tunnel,
+    // an idle timeout or a failover does to the socket.
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+    const terminate = async (): Promise<void> => {
+      const pid = (await run('SELECT pg_backend_pid()')).rows[0]?.[0]
+      const side = new PgConnection(cfg, password)
+      await side.connect()
+      try {
+        await side.query('SELECT pg_terminate_backend($1)', [Number(pid)])
+      } finally {
+        await side.disconnect()
+      }
+      // Let the FATAL and the socket close reach the client.
+      for (let i = 0; i < 50 && session.state(cfg.id).connected; i++) await sleep(100)
+    }
+    const events: boolean[] = []
+    session.onStateChange = (st) => events.push(st.connected)
+
+    await terminate()
+    ok('the drop is reported to the renderer', events[0] === false && !session.state(cfg.id).connected,
+       JSON.stringify(events))
+    const r = await withTimeout(run('SELECT 1 AS back'), 8000, 'statement after a dropped connection')
+    ok('the next statement reconnects and runs', !r.error && r.rows[0]?.[0] === '1', r.error?.message)
+    ok('  and the reconnect is reported too', events[events.length - 1] === true, JSON.stringify(events))
+
+    // With a transaction open, the loss must be reported, not papered over.
+    await session.setTxMode(cfg.id, 'manual')
+    await run('SELECT 1')
+    ok('  (a transaction is open)', session.openTransactions().length === 1)
+    await terminate()
+    let msg = ''
+    try { await run('SELECT 1') } catch (e) { msg = (e as Error).message }
+    ok('a lost transaction is reported once', /rolled back/i.test(msg), msg)
+    const again = await withTimeout(run('SELECT 2 AS again'), 8000, 'statement after a lost transaction')
+    ok('  and the statement after that runs', !again.error && again.rows[0]?.[0] === '2', again.error?.message)
+    await session.rollback(cfg.id)
+    await session.setTxMode(cfg.id, 'auto')
+    session.onStateChange = undefined
   }
 
   console.log('\nopen transaction tracking')

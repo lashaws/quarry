@@ -21,6 +21,11 @@ export function StatusBar(props: Props) {
     <div className="statusbar">
       <span>{props.connectionName ?? 'No connection'}</span>
       {state?.serverVersion && <span>PostgreSQL {state.serverVersion}</span>}
+      {state?.sslWarning && (
+        <span className="q-pill tx-failed" title={state.sslWarning}>
+          TLS unverified
+        </span>
+      )}
 
       <span className="spacer" />
 
