@@ -5,8 +5,10 @@ import type Cursor from 'pg-cursor'
 import { splitStatements } from '@shared/sql'
 import type {
   Catalog, Cell, ConnectionConfig, ConnectionState, EditTarget,
-  GridEdits, PendingChange, PlanNode, QueryRequest, QueryResult, TxMode
+  GridEdits, PendingChange, PlanNode, QueryRequest, QueryResult, TestResult, TunnelStatus, TxMode
 } from '@shared/ipc'
+import { AwsCliError, fetchSecretPassword, withRotatedSecret } from './aws/cli'
+import { TunnelManager, type TunnelLease } from './aws/tunnel'
 import { PgConnection, toQueryError, type RawChunk } from './drivers/postgres'
 import { introspect } from './introspect/postgres'
 import { buildChanges } from './query/dml'
@@ -34,6 +36,22 @@ export class Session {
   private connections = new Map<string, PgConnection>()
   private catalogs = new Map<string, Catalog>()
   private queries = new Map<string, ActiveQuery>()
+  private tunnels = new TunnelManager()
+  /** The SSM tunnel each connection holds a lease on; released when it disconnects. */
+  private leases = new Map<string, TunnelLease>()
+  /** The saved config behind each live connection: PgConnection only sees the dialled one. */
+  private configs = new Map<string, ConnectionConfig>()
+
+  constructor() {
+    this.tunnels.onChange = (list) => this.onTunnelsChange?.(list)
+  }
+
+  /** Pushed to the renderer whenever an SSM tunnel opens, closes or gains a user. */
+  onTunnelsChange?: (tunnels: TunnelStatus[]) => void
+
+  tunnelStatus(): TunnelStatus[] {
+    return this.tunnels.list()
+  }
 
   /** Pushed to the renderer whenever a connection's state changes underneath it. */
   onStateChange?: (state: ConnectionState) => void
@@ -54,6 +72,7 @@ export class Session {
     if (!c) throw new Error('Not connected')
     if (c.connected) return c
     try {
+      await this.refreshAws(id, c)
       await c.connect()
     } catch (err) {
       throw new Error(
@@ -72,6 +91,7 @@ export class Session {
 
   private track(cfg: ConnectionConfig, conn: PgConnection): void {
     this.connections.set(cfg.id, conn)
+    this.configs.set(cfg.id, cfg)
     conn.onLost = () => {
       // Only if this is still the connection the session knows by that id.
       if (this.connections.get(cfg.id) === conn) this.onStateChange?.(this.state(cfg.id))
@@ -95,18 +115,66 @@ export class Session {
     const existing = this.connections.get(cfg.id)
     if (existing?.connected) return this.state(cfg.id)
 
-    const password = getSecret(cfg.id)
-    if (password === undefined && secretIsUnreadable(cfg.id)) {
+    // A password pulled from Secrets Manager replaces the keychain one entirely.
+    const keychain = cfg.passwordSource ? undefined : getSecret(cfg.id)
+    if (!cfg.passwordSource && keychain === undefined && secretIsUnreadable(cfg.id)) {
       throw new Error(
         `The saved password for ${cfg.name} is in the keychain but this build cannot read it. ` +
           'That happens after installing or re-signing the app. Open the connection and enter the password once to store it again.'
       )
     }
 
-    const conn = new PgConnection(cfg, password)
-    await conn.connect()
+    const { conn, lease } = await this.dial(cfg, keychain)
+    if (lease) this.leases.set(cfg.id, lease)
     this.track(cfg, conn)
     return this.state(cfg.id)
+  }
+
+  /**
+   * Opens a connection, bringing up its SSM tunnel and reading its password
+   * from Secrets Manager first when the config asks for either. The tunnel
+   * lease is released if anything after it fails.
+   *
+   * An authentication failure re-reads the secret once (see withRotatedSecret).
+   */
+  private async dial(
+    cfg: ConnectionConfig, password: string | undefined
+  ): Promise<{ conn: PgConnection; lease?: TunnelLease }> {
+    let lease: TunnelLease | undefined
+    try {
+      if (cfg.ssmTunnel) lease = await this.tunnels.acquire(cfg.ssmTunnel)
+      const target = lease ? { ...cfg, host: '127.0.0.1', port: lease.port } : cfg
+      if (cfg.passwordSource) password = await fetchSecretPassword(cfg.passwordSource)
+
+      const open = async (pw: string | undefined): Promise<PgConnection> => {
+        const c = new PgConnection(target, pw)
+        await c.connect()
+        return c
+      }
+      const conn = cfg.passwordSource
+        ? await withRotatedSecret(cfg.passwordSource, password ?? '', open)
+        : await open(password)
+      return { conn, lease }
+    } catch (err) {
+      await lease?.release()
+      throw err
+    }
+  }
+
+  /**
+   * Before redialling a dropped connection: reopen its tunnel if the forward
+   * died (SSM ends idle sessions) on the same local port, and pick up a rotated
+   * password. Both are no-ops for a connection with neither feature.
+   */
+  private async refreshAws(id: string, c: PgConnection): Promise<void> {
+    const cfg = this.configs.get(id)
+    if (!cfg) return
+    const lease = this.leases.get(id)
+    if (cfg.ssmTunnel && lease && !lease.alive) {
+      await lease.release()
+      this.leases.set(id, await this.tunnels.acquire({ ...cfg.ssmTunnel, localPort: lease.port }))
+    }
+    if (cfg.passwordSource) c.setPassword(await fetchSecretPassword(cfg.passwordSource))
   }
 
   async disconnect(id: string): Promise<void> {
@@ -114,19 +182,25 @@ export class Session {
     const c = this.connections.get(id)
     this.connections.delete(id)
     this.catalogs.delete(id)
+    this.configs.delete(id)
     if (c) await c.disconnect()
+    await this.leases.get(id)?.release()
+    this.leases.delete(id)
   }
 
-  async test(cfg: ConnectionConfig, password?: string): Promise<{ ok: boolean; message: string }> {
-    const conn = new PgConnection(cfg, password ?? getSecret(cfg.id))
+  async test(cfg: ConnectionConfig, password?: string): Promise<TestResult> {
+    let session: { conn: PgConnection; lease?: TunnelLease } | undefined
     try {
-      await conn.connect()
+      session = await this.dial(cfg, cfg.passwordSource ? undefined : (password ?? getSecret(cfg.id)))
+      const { conn } = session
       const message = `Connected to PostgreSQL ${conn.serverVersion ?? ''}`.trim()
       return { ok: true, message: conn.sslWarning ? `${message}. ${conn.sslWarning}` : message }
     } catch (err) {
-      return { ok: false, message: (err as Error).message }
+      const sso = err instanceof AwsCliError && err.kind === 'sso' ? err.profile : undefined
+      return { ok: false, message: (err as Error).message, ssoLoginProfile: sso }
     } finally {
-      await conn.disconnect()
+      await session?.conn.disconnect()
+      await session?.lease?.release()
     }
   }
 
@@ -483,8 +557,13 @@ export class Session {
   }
 
   async shutdown(): Promise<void> {
+    // Signals go out synchronously, before the first await, so this also works
+    // from a process 'exit' handler.
+    const tunnelsClosed = this.tunnels.closeAll()
     await Promise.all([...this.connections.values()].map((c) => c.disconnect()))
     this.connections.clear()
+    this.leases.clear()
+    await tunnelsClosed
   }
 }
 

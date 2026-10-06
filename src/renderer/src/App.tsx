@@ -3,7 +3,7 @@ import { format } from 'sql-formatter'
 import { statementAt } from '@shared/sql'
 import type {
   Catalog, Cell, CellEdit, ConnectionConfig, ConnectionState, DbaQueryInfo, EditorTab,
-  GridEdits, HistoryEntry, PlanNode, QueryResult, TableMeta, TxMode, WorkspaceState
+  GridEdits, HistoryEntry, PlanNode, QueryResult, TableMeta, TunnelStatus, TxMode, WorkspaceState
 } from '@shared/ipc'
 import { editCount, emptyEdits } from '@shared/ipc'
 import { setCatalog as setEditorCatalog } from './editor/monaco'
@@ -11,6 +11,7 @@ import { SqlEditor, disposeModel, type EditorApi } from './components/SqlEditor'
 import { SchemaTree } from './components/SchemaTree'
 import { ResultGrid } from './components/ResultGrid'
 import { ConnectionDialog } from './components/ConnectionDialog'
+import { SsoPrompt } from './components/SsoLogin'
 import { StatusBar } from './components/StatusBar'
 import { Palette, type PaletteItem } from './components/Palette'
 import { PlanTree } from './components/PlanTree'
@@ -33,6 +34,7 @@ type Modal =
   | { kind: 'connection'; cfg: ConnectionConfig | null }
   | { kind: 'goToTable' }
   | { kind: 'history' }
+  | { kind: 'sso'; connectionId: string; profile: string; message: string }
 
 // Mirror of the main-process net: a rejected IPC call must not blank the UI.
 window.addEventListener('unhandledrejection', (e) => {
@@ -63,6 +65,7 @@ export function App() {
   const [dbaOpen, setDbaOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [modal, setModal] = useState<Modal>({ kind: 'none' })
+  const [tunnels, setTunnels] = useState<TunnelStatus[]>([])
   const [history, setHistory] = useState<HistoryEntry[]>([])
 
   // connect() is defined below; the bootstrap effect reaches it through this ref.
@@ -163,12 +166,21 @@ export function App() {
     []
   )
 
+  useEffect(() => {
+    void window.api.aws.tunnels().then(setTunnels)
+    return window.api.aws.onTunnelsChanged(setTunnels)
+  }, [])
+
   const connect = useCallback(
     async (id: string) => {
       setBusy(true)
       try {
         const st = await window.api.connections.connect(id)
         setStates((s) => ({ ...s, [id]: st }))
+        if (st.ssoLoginProfile) {
+          setModal({ kind: 'sso', connectionId: id, profile: st.ssoLoginProfile, message: st.error ?? 'The AWS SSO session has expired.' })
+          return
+        }
         await loadCatalog(id)
       } catch (err) {
         setResults([errorResult((err as Error).message)])
@@ -687,6 +699,16 @@ export function App() {
       <div className="titlebar">
         <span className="brand">QUARRY</span>
         <span className="spacer" />
+        {tunnels.map((t) => (
+          <span
+            key={t.key}
+            className={`q-pill ${t.state === 'opening' ? 'tx-active' : 'dirty'}`}
+            role="status"
+            title={`SSM tunnel ${t.label}${t.localPort ? ` on 127.0.0.1:${t.localPort}` : ''} · ${t.users} connection${t.users === 1 ? '' : 's'}`}
+          >
+            {t.state === 'opening' ? 'Opening SSM tunnel…' : `SSM tunnel :${t.localPort}`}
+          </span>
+        ))}
         <span className="dba-menu">
           <button className="ghost" onClick={() => setDbaOpen((v) => !v)} title="Database diagnostics">
             DBA ▾
@@ -1078,6 +1100,19 @@ export function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {modal.kind === 'sso' && (
+        <SsoPrompt
+          profile={modal.profile}
+          message={modal.message}
+          onCancel={() => setModal({ kind: 'none' })}
+          onDone={() => {
+            const id = modal.connectionId
+            setModal({ kind: 'none' })
+            void connect(id)
+          }}
+        />
       )}
 
       {modal.kind === 'goToTable' && (

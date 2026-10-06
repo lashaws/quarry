@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import type { GridEdits, ConnectionConfig, QueryRequest, TxMode, WorkspaceState } from '@shared/ipc'
 import { IPC } from '@shared/ipc'
 import { Session } from './session'
+import { AwsCliError, ssoLogin } from './aws/cli'
 import { importFromDBeaver, listConnections, removeConnection, saveConnection } from './store/connections'
 import { search as searchHistory } from './store/history'
 import { readJson, writeJson } from './store/json'
@@ -15,6 +16,10 @@ let mainWindow: BrowserWindow | null = null
 // next statement. Without this the sidebar kept showing the last state it was
 // handed and every statement failed with "Not connected" until a restart.
 session.onStateChange = (state) => mainWindow?.webContents.send(IPC.connectionsChanged, state)
+session.onTunnelsChange = (list) => mainWindow?.webContents.send(IPC.awsTunnelsChanged, list)
+// Backstop for any exit path that skips before-quit: the tunnels are child
+// processes, and one that outlives the app is an orphan holding a port.
+process.on('exit', () => void session.shutdown())
 /** Set once the user has answered the uncommitted-transaction prompt. */
 let transactionsResolved = false
 
@@ -189,7 +194,20 @@ function registerIpc(): void {
     removeConnection(id)
   })
   h(IPC.connectionsTest, (_e, cfg: ConnectionConfig, password?: string) => session.test(cfg, password))
-  h(IPC.connectionsConnect, (_e, id: string) => session.connect(requireConfig(id)))
+  h(IPC.connectionsConnect, async (_e, id: string) => {
+    try {
+      return await session.connect(requireConfig(id))
+    } catch (err) {
+      // An expired SSO login is answered, not thrown, so the renderer can offer
+      // the sign-in button; an Error crossing IPC would arrive as bare text.
+      if (err instanceof AwsCliError && err.kind === 'sso') {
+        return { ...session.state(id), error: err.message, ssoLoginProfile: err.profile }
+      }
+      throw err
+    }
+  })
+  h(IPC.awsSsoLogin, (_e, profile: string) => ssoLogin(profile))
+  h(IPC.awsTunnels, () => session.tunnelStatus())
   h(IPC.connectionsDisconnect, (_e, id: string) => session.disconnect(id))
   h(IPC.connectionsState, (_e, id: string) => session.state(id))
   h(IPC.connectionsImportDBeaver, () => importFromDBeaver())

@@ -63,6 +63,56 @@ ratios, vacuum health, and slowest statements. They run through the ordinary
 query path, so each lands in the normal grid with sorting, filtering and export
 already working.
 
+## Connect through AWS SSM with passwords from Secrets Manager
+
+A saved connection can open its own SSM port-forward and read its password from
+AWS Secrets Manager every time you connect, so a database behind a jump host
+whose password rotates needs no script and no stale saved password. Quarry
+shells out to the `aws` CLI (no AWS SDK, so no new dependencies).
+
+**Prerequisites**
+
+- AWS CLI v2 (`brew install awscli`) and the
+  [session-manager-plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
+  (`brew install --cask session-manager-plugin`), both on `PATH` (Homebrew's
+  `/opt/homebrew/bin` and `/usr/local/bin` are added for you when the app is
+  launched from Finder).
+- An SSO profile per account (`aws configure sso`) that can start a session on
+  the jump host and read the secret.
+
+**Set it up.** In the connection editor, the **AWS** section has two independent
+options:
+
+- *Open an SSM port-forward when connecting*: AWS profile, region, the jump
+  host's instance id, the remote host and port, and an optional local port (a
+  free one is chosen when blank). Host and Port above are then ignored; Quarry
+  dials `127.0.0.1` on the local port. Keep SSL on `verify-full` and put the
+  real endpoint name in *Verify certificate as*, so the certificate is still
+  checked against the database, not `localhost`.
+- *Read the password from AWS Secrets Manager on every connect*: profile,
+  region, secret id, and the JSON key (default `password`, what RDS rotation
+  writes). The password is held in memory for that connect only; it is never
+  saved, logged, shown in an error or put in the Keychain.
+
+**What Connect (and Test) does**
+
+1. If nothing listens on the local port, runs `aws ssm start-session` and waits
+   up to 30 s for it. A failure shows the CLI's own last lines.
+2. Reads the secret with `aws secretsmanager get-secret-value`.
+3. If the SSO login has expired, offers a button that runs `aws sso login
+   --profile …` (opens the browser), then connects again.
+4. If the database rejects the password, re-reads the secret once and retries,
+   which covers connecting right after a rotation.
+
+Tunnels are shared by profile, jump host and remote endpoint across connections
+and tabs, counted, and closed when the last connection using one disconnects and
+when Quarry quits. The titlebar shows each open tunnel. A forward that SSM
+drops (idle timeout) is reopened on the same port when the connection redials.
+
+`scripts/seed-trueage-aws.mjs --dry-run` shows how the author's TrueAge
+connections were migrated to this; it is a one-off and specific to that setup.
+`npm run test:aws` drives the whole path against a live database.
+
 ## Keybindings
 
 | | |
@@ -171,7 +221,7 @@ namespaced `q-*`, and a test fails the build if that ever regresses.
 ## Not built yet
 
 SQLite and DuckDB drivers (the IPC contract already allows for them), SSH
-tunnels, schema diff, ER diagrams, and a Windows/Linux release pipeline.
+tunnels (SSM port-forwards are built, see above), schema diff, ER diagrams, and a Windows/Linux release pipeline.
 
 ## License
 

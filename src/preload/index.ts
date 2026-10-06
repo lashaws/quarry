@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { Api, GridEdits, ConnectionConfig, ConnectionState, QueryRequest, TxMode, WorkspaceState } from '@shared/ipc'
+import type { Api, GridEdits, ConnectionConfig, ConnectionState, QueryRequest, TunnelStatus, TxMode, WorkspaceState } from '@shared/ipc'
 import { IPC } from '@shared/ipc'
 
 const invoke = ipcRenderer.invoke.bind(ipcRenderer)
@@ -22,6 +22,15 @@ const api: Api = {
       const listener = (_e: unknown, state: ConnectionState): void => cb(state)
       ipcRenderer.on(IPC.connectionsChanged, listener)
       return () => ipcRenderer.removeListener(IPC.connectionsChanged, listener)
+    }
+  },
+  aws: {
+    ssoLogin: (profile: string) => invoke(IPC.awsSsoLogin, profile),
+    tunnels: () => invoke(IPC.awsTunnels),
+    onTunnelsChanged: (cb: (tunnels: TunnelStatus[]) => void) => {
+      const listener = (_e: unknown, tunnels: TunnelStatus[]): void => cb(tunnels)
+      ipcRenderer.on(IPC.awsTunnelsChanged, listener)
+      return () => ipcRenderer.removeListener(IPC.awsTunnelsChanged, listener)
     }
   },
   catalog: {

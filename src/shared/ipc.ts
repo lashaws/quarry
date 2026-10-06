@@ -4,6 +4,36 @@ export type Engine = 'postgres' | 'sqlite'
 
 export type SslMode = 'disable' | 'require' | 'verify-full'
 
+/**
+ * An SSM port-forward Quarry opens (and closes) itself on Connect, through the
+ * `aws` CLI. When set, host and port are ignored: the socket goes to
+ * 127.0.0.1 and the tunnel's local port, while `sslServerName` still checks
+ * the certificate against the real endpoint.
+ */
+export interface SsmTunnel {
+  profile: string
+  region: string
+  /** EC2 instance id of the jump host */
+  target: string
+  remoteHost: string
+  remotePort: number
+  /** Fixed local port; a free one is chosen when absent. */
+  localPort?: number
+}
+
+/**
+ * Where the password comes from on every Connect, so a rotated one is picked up
+ * without anyone re-saving the connection. Never stored: only the pointer is.
+ */
+export interface PasswordSource {
+  kind: 'aws-secret'
+  profile: string
+  region: string
+  secretId: string
+  /** Key inside the secret's JSON; 'password' when absent. */
+  jsonKey?: string
+}
+
 export interface ConnectionConfig {
   id: string
   name: string
@@ -31,6 +61,8 @@ export interface ConnectionConfig {
    * is what lets verify-full work through a tunnel without editing /etc/hosts.
    */
   sslServerName?: string
+  ssmTunnel?: SsmTunnel
+  passwordSource?: PasswordSource
   /** sqlite */
   file?: string
   /** UI accent, DataGrip-style colour coding per environment */
@@ -146,6 +178,28 @@ export interface ConnectionState {
   error?: string
   /** Set when the connection is encrypted but not verified despite asking for verify-full. */
   sslWarning?: string
+  /**
+   * Set when the AWS CLI says its SSO session is missing or expired. The
+   * renderer offers to run `aws sso login` for this profile, then connects again.
+   */
+  ssoLoginProfile?: string
+}
+
+/** One SSM tunnel Quarry holds open, for the titlebar. */
+export interface TunnelStatus {
+  key: string
+  /** e.g. "trueage-test-admin → i-0f4d…" */
+  label: string
+  state: 'opening' | 'open'
+  localPort: number | null
+  /** connections currently sharing it */
+  users: number
+}
+
+export interface TestResult {
+  ok: boolean
+  message: string
+  ssoLoginProfile?: string
 }
 
 /** One staged cell edit, before submit. */
@@ -205,13 +259,19 @@ export interface Api {
     list(): Promise<ConnectionConfig[]>
     save(cfg: ConnectionConfig, password?: string): Promise<ConnectionConfig>
     remove(id: string): Promise<void>
-    test(cfg: ConnectionConfig, password?: string): Promise<{ ok: boolean; message: string }>
+    test(cfg: ConnectionConfig, password?: string): Promise<TestResult>
     connect(id: string): Promise<ConnectionState>
     disconnect(id: string): Promise<void>
     state(id: string): Promise<ConnectionState>
     importFromDBeaver(): Promise<ConnectionConfig[]>
     /** Main reports a connection dropping or coming back on its own. Returns the unsubscribe. */
     onChanged(cb: (state: ConnectionState) => void): () => void
+  }
+  aws: {
+    /** Runs `aws sso login --profile` (opens the browser) and resolves when it finishes. */
+    ssoLogin(profile: string): Promise<void>
+    tunnels(): Promise<TunnelStatus[]>
+    onTunnelsChanged(cb: (tunnels: TunnelStatus[]) => void): () => void
   }
   catalog: {
     get(connectionId: string, refresh?: boolean): Promise<Catalog>
@@ -315,6 +375,9 @@ export const IPC = {
   connectionsState: 'connections:state',
   connectionsChanged: 'connections:changed',
   connectionsImportDBeaver: 'connections:importDBeaver',
+  awsSsoLogin: 'aws:ssoLogin',
+  awsTunnels: 'aws:tunnels',
+  awsTunnelsChanged: 'aws:tunnelsChanged',
   catalogGet: 'catalog:get',
   queryRun: 'query:run',
   queryRunScript: 'query:runScript',

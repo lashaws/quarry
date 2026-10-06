@@ -65,6 +65,28 @@ through the running app window via `test/probe/drive.mjs`.
 All 11 diagnostics run through the ordinary query path, so each lands in the normal
 grid with sorting, filtering, `Copy as` and CSV export already working.
 
+## Round 4 — AWS connections
+
+- [x] **42. Connect through AWS SSM with passwords from Secrets Manager** — a connection can carry
+      `ssmTunnel` and `passwordSource` (pointers only; no password is ever stored). On Connect and Test
+      Quarry opens `aws ssm start-session`, waits for the local port, reads the secret and dials
+      `127.0.0.1` with `verify-full` still checked against the real RDS name. Needs AWS CLI v2 and
+      the session-manager-plugin; no AWS SDK. Live: TEST `trueage_report` over verify-full,
+      `current_user = trueage_report`, a second connection shared the one tunnel, and no
+      `session-manager-plugin` process survived disconnect or quit.
+- [x] **43. One tunnel per endpoint, reference-counted** — shared by every connection and tab, killed
+      with the last user and on quit, in its own process group so the plugin cannot be orphaned.
+      A forward SSM ends on idle is reopened on the same port when the connection redials.
+      Unit: 36 assertions on a stubbed spawn (port wait, timeout, reuse, ref-counting, SIGKILL fallback).
+- [x] **44. Expired SSO login is a button, not a stack trace** — the CLI's "SSO session / Token has
+      expired / sso login" wording is recognised; Connect and Test offer `aws sso login --profile …`
+      and retry when it finishes.
+- [x] **45. A rotated password is picked up** — an authentication failure re-reads the secret once and
+      retries; an unchanged secret is a real failure and is not retried. Secret fetch errors name the
+      secret and key, never a value. Unit: 32 assertions.
+- [x] **46. Titlebar tunnel status** — "Opening SSM tunnel…" and "SSM tunnel :port" pills with the
+      profile, jump host and connection count on hover.
+
 ## Bugs found by audit and fixed
 
 | Severity | Defect | Fix |
@@ -116,6 +138,6 @@ grid with sorting, filtering, `Copy as` and CSV export already working.
 
 ## Test suites
 
-`npm run test:all` — 196 unit · 68 live driver · 49 Session.
+`npm run test:all` — 303 unit · 68 live driver · 49 Session. `npm run test:aws` (9 assertions) is separate: it needs a live SSO login to AWS.
 The Session suite exists because that layer had no coverage and hid the deadlock
 behind 205 otherwise-passing assertions.

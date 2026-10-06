@@ -12,6 +12,7 @@
     "test": "./run-tests.sh",
     "test:live": "./node_modules/.bin/esbuild test/live.ts --bundle --format=esm --platform=node --packages=external --tsconfig=tsconfig.test.json --log-level=warning --outfile=.test-out/live.mjs && node .test-out/live.mjs",
     "test:session": "./node_modules/.bin/esbuild test/session.live.ts --bundle --format=esm --platform=node --packages=external --alias:electron=./test/stubs/electron.ts --tsconfig=tsconfig.test.json --log-level=warning --outfile=.test-out/session.mjs && node .test-out/session.mjs",
+    "test:aws": "./node_modules/.bin/esbuild test/aws.live.ts --bundle --format=esm --platform=node --packages=external --alias:electron=./test/stubs/electron.ts --tsconfig=tsconfig.test.json --log-level=warning --outfile=.test-out/aws.live.mjs && node .test-out/aws.live.mjs",
     "test:all": "npm run test && npm run test:live && npm run test:session",
     "package": "npm run build && electron-builder --mac",
     "package:all": "npm run build && electron-builder --mac --linux --win"

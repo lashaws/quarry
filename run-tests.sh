@@ -6,7 +6,7 @@ mkdir -p .test-out
 for f in test/*.test.ts; do
   name=$(basename "$f" .ts)
   ./node_modules/.bin/esbuild "$f" --bundle --format=esm --platform=node \
-    --tsconfig=tsconfig.test.json --log-level=warning --outfile=".test-out/$name.mjs"
+    --alias:electron=./test/stubs/electron.ts --tsconfig=tsconfig.test.json --log-level=warning --outfile=".test-out/$name.mjs"
   echo "── $name"
   node ".test-out/$name.mjs" || status=1
 done

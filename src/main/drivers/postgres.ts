@@ -69,6 +69,11 @@ export class PgConnection {
     this.password = password
   }
 
+  /** A rotated secret is re-read before every reconnect; see Session.refreshAws. */
+  setPassword(password: string): void {
+    this.password = password
+  }
+
   get connected(): boolean {
     return this.client !== null
   }
