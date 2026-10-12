@@ -27,13 +27,13 @@ const RESERVED = new Set([
   'input', 'text', 'value', 'name', 'type', 'expanded', 'collapsed', 'monaco', 'ag'
 ])
 
-const css = readFileSync('src/renderer/src/theme/billing.css', 'utf8')
+const css = readFileSync('src/renderer/src/theme/app.css', 'utf8')
 
 // Selectors at the start of a rule, i.e. not nested under one of our own classes.
 const leading = [...css.matchAll(/^\s*(\.[A-Za-z][\w-]*)/gm)].map((m) => m[1].slice(1))
 const offenders = [...new Set(leading)].filter((c) => RESERVED.has(c))
 
-console.log('billing.css must not restyle bundled-widget internals')
+console.log('app.css must not restyle bundled-widget internals')
 ok('no unscoped rule targets a reserved class name', offenders.length === 0,
    offenders.length ? `offending selectors: ${offenders.map((o) => '.' + o).join(', ')}` : '')
 ok('the stylesheet was actually read', leading.length > 20, String(leading.length))
