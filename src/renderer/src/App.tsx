@@ -3,7 +3,7 @@ import { format } from 'sql-formatter'
 import { statementAt } from '@shared/sql'
 import type {
   Catalog, Cell, CellEdit, ConnectionConfig, ConnectionState, DbaQueryInfo, EditorTab,
-  GridEdits, HistoryEntry, PlanNode, QueryResult, TableMeta, TunnelStatus, TxMode, WorkspaceState
+  GridEdits, HistoryEntry, PlanNode, QueryResult, SourceTarget, TableMeta, TunnelStatus, TxMode, WorkspaceState
 } from '@shared/ipc'
 import { editCount, emptyEdits } from '@shared/ipc'
 import { setCatalog as setEditorCatalog } from './editor/monaco'
@@ -50,6 +50,13 @@ export function App() {
 
   const [tabs, setTabs] = useState<EditorTab[]>([])
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
+  const tabsRef = useRef<EditorTab[]>([])
+  tabsRef.current = tabs
+  const [renamingTabId, setRenamingTabId] = useState<string | null>(null)
+  const [tabMenu, setTabMenu] = useState<{ x: number; y: number; id: string } | null>(null)
+  const [dragTab, setDragTab] = useState<{ id: string; over: string | null; after: boolean } | null>(null)
+  /** most recent last; ⌘⇧T pops it */
+  const closedTabs = useRef<EditorTab[]>([])
 
   const [results, setResults] = useState<QueryResult[]>([])
   const [activeResult, setActiveResult] = useState(0)
@@ -143,14 +150,21 @@ export function App() {
     setEditorCatalog(catalog)
   }, [catalog])
 
+  /** The last catalog this connection produced, so the tree stays browsable offline. */
+  const showCachedCatalog = useCallback(async (id: string) => {
+    const cached = await window.api.catalog.cached(id).catch(() => null)
+    // Never let a slow disk read replace a live catalog that already landed.
+    setCatalog((cur) => (cur?.connectionId === id && !cur.offline ? cur : cached))
+  }, [])
+
   const loadCatalog = useCallback(async (id: string, refresh = false) => {
     try {
       const cat = await window.api.catalog.get(id, refresh)
       setCatalog(cat)
     } catch {
-      setCatalog(null)
+      await showCachedCatalog(id)
     }
-  }, [])
+  }, [showCachedCatalog])
 
   const refreshState = useCallback(async (id: string) => {
     const st = await window.api.connections.state(id)
@@ -174,9 +188,11 @@ export function App() {
   const connect = useCallback(
     async (id: string) => {
       setBusy(true)
+      void showCachedCatalog(id)
       try {
         const st = await window.api.connections.connect(id)
         setStates((s) => ({ ...s, [id]: st }))
+        if (!st.connected) return
         if (st.ssoLoginProfile) {
           setModal({ kind: 'sso', connectionId: id, profile: st.ssoLoginProfile, message: st.error ?? 'The AWS SSO session has expired.' })
           return
@@ -188,7 +204,7 @@ export function App() {
         setBusy(false)
       }
     },
-    [loadCatalog]
+    [loadCatalog, showCachedCatalog]
   )
 
   connectRef.current = connect
@@ -198,12 +214,12 @@ export function App() {
       if (connectedIds.has(id)) {
         await window.api.connections.disconnect(id)
         setStates((s) => ({ ...s, [id]: { ...s[id], connected: false, txStatus: 'idle' } }))
-        if (id === activeConnectionId) setCatalog(null)
+        if (id === activeConnectionId) await showCachedCatalog(id)
       } else {
         await connect(id)
       }
     },
-    [connectedIds, activeConnectionId, connect]
+    [connectedIds, activeConnectionId, connect, showCachedCatalog]
   )
 
   const selectConnection = useCallback(
@@ -484,28 +500,112 @@ export function App() {
     setActiveTabId(t.id)
   }, [activeConnectionId])
 
-  const closeTab = useCallback(
-    (id: string) => {
-      setTabs((ts) => {
-        const next = ts.filter((t) => t.id !== id)
-        disposeModel(id)
-        if (!next.length) {
-          const fresh = newTab(activeConnectionId)
-          setActiveTabId(fresh.id)
-          return [fresh]
-        }
-        if (id === activeTabId) setActiveTabId(next[next.length - 1].id)
-        return next
-      })
-    },
-    [activeTabId, activeConnectionId]
-  )
-
-  const setTabSql = useCallback((sql: string) => {
-    setTabs((ts) => ts.map((t) => (t.id === activeTabIdRef.current ? { ...t, sql, title: titleFor(sql) } : t)))
-  }, [])
   const activeTabIdRef = useRef<string | null>(null)
   activeTabIdRef.current = activeTabId
+
+  const closeTabs = useCallback(
+    (ids: string[]) => {
+      const ts = tabsRef.current
+      const drop = new Set(ids)
+      const gone = ts.filter((t) => drop.has(t.id))
+      if (!gone.length) return
+      for (const t of gone) {
+        disposeModel(t.id)
+        if (t.sql.trim()) closedTabs.current.push(t)
+      }
+      closedTabs.current = closedTabs.current.slice(-30)
+      let next = ts.filter((t) => !drop.has(t.id))
+      let active = activeTabIdRef.current
+      if (!next.length) {
+        const fresh = newTab(activeConnectionId)
+        next = [fresh]
+        active = fresh.id
+      } else if (!active || drop.has(active)) {
+        // Land on the neighbour, the way an IDE does, not on the far end of the strip.
+        const at = ts.findIndex((t) => t.id === active)
+        const right = ts.slice(at + 1).find((t) => !drop.has(t.id))
+        const left = ts.slice(0, Math.max(at, 0)).reverse().find((t) => !drop.has(t.id))
+        active = (right ?? left ?? next[0]).id
+      }
+      setTabs(next)
+      setActiveTabId(active)
+    },
+    [activeConnectionId]
+  )
+  const closeTab = useCallback((id: string) => closeTabs([id]), [closeTabs])
+
+  const reopenTab = useCallback(() => {
+    const t = closedTabs.current.pop()
+    if (!t) return
+    const tab = tabsRef.current.some((x) => x.id === t.id) ? { ...t, id: crypto.randomUUID() } : t
+    setTabs((ts) => [...ts, tab])
+    setActiveTabId(tab.id)
+  }, [])
+
+  const duplicateTab = useCallback((id: string) => {
+    const src = tabsRef.current.find((t) => t.id === id)
+    if (!src) return
+    const copy: EditorTab = { ...src, id: crypto.randomUUID() }
+    setTabs((ts) => {
+      const at = ts.findIndex((t) => t.id === id)
+      return [...ts.slice(0, at + 1), copy, ...ts.slice(at + 1)]
+    })
+    setActiveTabId(copy.id)
+  }, [])
+
+  const renameTab = useCallback((id: string, title: string) => {
+    const name = title.trim()
+    setTabs((ts) =>
+      ts.map((t) =>
+        t.id !== id ? t : name ? { ...t, title: name, customTitle: true } : { ...t, title: titleFor(t.sql), customTitle: false }
+      )
+    )
+    setRenamingTabId(null)
+  }, [])
+
+  const moveTab = useCallback((id: string, target: string, after: boolean) => {
+    if (id === target) return
+    setTabs((ts) => {
+      const moving = ts.find((t) => t.id === id)
+      if (!moving) return ts
+      const rest = ts.filter((t) => t.id !== id)
+      const at = rest.findIndex((t) => t.id === target)
+      if (at < 0) return ts
+      const idx = after ? at + 1 : at
+      return [...rest.slice(0, idx), moving, ...rest.slice(idx)]
+    })
+  }, [])
+
+  const cycleTab = useCallback((step: number) => {
+    const ts = tabsRef.current
+    if (ts.length < 2) return
+    const at = ts.findIndex((t) => t.id === activeTabIdRef.current)
+    setActiveTabId(ts[(at + step + ts.length) % ts.length].id)
+  }, [])
+
+  // Keep the active tab visible when the strip overflows.
+  useEffect(() => {
+    document.querySelector('.tabstrip .q-tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [activeTabId])
+
+  useEffect(() => {
+    if (!tabMenu) return
+    const close = (): void => setTabMenu(null)
+    window.addEventListener('click', close)
+    window.addEventListener('blur', close)
+    return () => {
+      window.removeEventListener('click', close)
+      window.removeEventListener('blur', close)
+    }
+  }, [tabMenu])
+
+  const setTabSql = useCallback((sql: string) => {
+    setTabs((ts) =>
+      ts.map((t) =>
+        t.id !== activeTabIdRef.current ? t : t.customTitle ? { ...t, sql } : { ...t, sql, title: titleFor(sql) }
+      )
+    )
+  }, [])
 
   /* ---------- Ctrl+Tab toggles back to the previously active tab ---------- */
   const prevTabId = useRef<string | null>(null)
@@ -517,8 +617,6 @@ export function App() {
     lastSeenTabId.current = activeTabId
   }, [activeTabId])
 
-  const tabsRef = useRef<EditorTab[]>([])
-  tabsRef.current = tabs
   const modalKindRef = useRef<Modal['kind']>('none')
   modalKindRef.current = modal.kind
 
@@ -560,12 +658,29 @@ export function App() {
     (t: TableMeta) => {
       lastOpenedTable.current = { schema: t.schema, table: t.name }
       const sql = `SELECT *\nFROM ${t.schema}.${t.name}\nLIMIT 500;`
-      const tab = { ...newTab(activeConnectionId), sql, title: t.name }
+      const tab = { ...newTab(activeConnectionId), sql, title: t.name, customTitle: true }
       setTabs((ts) => [...ts, tab])
       setActiveTabId(tab.id)
       void runOn(sql.replace(/;\s*$/, ''), 'statement')
     },
     [activeConnectionId, runOn]
+  )
+
+  /** A routine's, view's or trigger's CREATE statement, in a console of its own. */
+  const openSource = useCallback(
+    async (target: SourceTarget, title: string) => {
+      if (!activeConnectionId) return
+      try {
+        const sql = await window.api.catalog.source(activeConnectionId, target)
+        const tab = { ...newTab(activeConnectionId), sql, title, customTitle: true }
+        setTabs((ts) => [...ts, tab])
+        setActiveTabId(tab.id)
+      } catch (err) {
+        setResults([errorResult((err as Error).message)])
+        setActiveResult(0)
+      }
+    },
+    [activeConnectionId]
   )
 
   const notify = useCallback((label: string) => {
@@ -640,6 +755,9 @@ export function App() {
   actions.current = {
     'menu:newTab': addTab,
     'menu:closeTab': () => activeTabId && closeTab(activeTabId),
+    'menu:reopenTab': reopenTab,
+    'menu:nextTab': () => cycleTab(1),
+    'menu:prevTab': () => cycleTab(-1),
     'menu:newConnection': () => setModal({ kind: 'connection', cfg: null }),
     // Cmd+Enter lands here (the native menu owns the accelerator): first press
     // highlights the statement, Enter or a second Cmd+Enter runs it.
@@ -819,6 +937,9 @@ export function App() {
               selectedTable.current = t ? { schema: t.schema, table: t.name } : null
             }}
             onShowDdl={(t) => void showDdl({ schema: t.schema, table: t.name })}
+            onOpenSource={(target, title) => void openSource(target, title)}
+            onInsertText={(text) => editorApi.current?.insertText(text)}
+            onRefresh={() => activeConnectionId && void loadCatalog(activeConnectionId, true)}
             onEditConnection={(cfg) => setModal({ kind: 'connection', cfg })}
           />
         </div>
@@ -829,28 +950,117 @@ export function App() {
 
         <div className="q-main">
           <div className="tabstrip">
-            {tabs.map((t) => (
-              <div
-                key={t.id}
-                className={`q-tab${t.id === activeTabId ? ' active' : ''}`}
-                onClick={() => setActiveTabId(t.id)}
-              >
-                <span>{t.title}</span>
-                <span
-                  className="q-close"
-                  onClick={(e) => {
-                    e.stopPropagation()
+            {tabs.map((t) => {
+              const conn = connections.find((c) => c.id === t.connectionId)
+              const drop = dragTab && dragTab.over === t.id && dragTab.id !== t.id
+              return (
+                <div
+                  key={t.id}
+                  className={
+                    `q-tab${t.id === activeTabId ? ' active' : ''}` +
+                    (dragTab?.id === t.id ? ' q-tab-dragging' : '') +
+                    (drop ? (dragTab.after ? ' q-drop-after' : ' q-drop-before') : '')
+                  }
+                  title={conn ? `${t.title} · ${conn.name}` : t.title}
+                  draggable={renamingTabId !== t.id}
+                  onClick={() => setActiveTabId(t.id)}
+                  onDoubleClick={() => setRenamingTabId(t.id)}
+                  // Middle-click closes, as in every browser and IDE.
+                  onMouseDown={(e) => e.button === 1 && e.preventDefault()}
+                  onAuxClick={(e) => {
+                    if (e.button !== 1) return
+                    e.preventDefault()
                     closeTab(t.id)
                   }}
+                  onContextMenu={(e) => {
+                    e.preventDefault()
+                    setTabMenu({ x: e.clientX, y: e.clientY, id: t.id })
+                  }}
+                  onDragStart={(e) => {
+                    e.dataTransfer.effectAllowed = 'move'
+                    e.dataTransfer.setData('text/x-quarry-tab', t.id)
+                    setDragTab({ id: t.id, over: null, after: false })
+                  }}
+                  onDragOver={(e) => {
+                    if (!dragTab) return
+                    e.preventDefault()
+                    const box = e.currentTarget.getBoundingClientRect()
+                    const after = e.clientX > box.left + box.width / 2
+                    if (dragTab.over !== t.id || dragTab.after !== after) setDragTab({ ...dragTab, over: t.id, after })
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault()
+                    if (dragTab) moveTab(dragTab.id, t.id, dragTab.after)
+                    setDragTab(null)
+                  }}
+                  onDragEnd={() => setDragTab(null)}
                 >
-                  ×
-                </span>
-              </div>
-            ))}
+                  {conn?.color && <span className="q-tab-dot" style={{ background: conn.color }} />}
+                  {renamingTabId === t.id ? (
+                    <input
+                      className="q-tab-rename"
+                      autoFocus
+                      defaultValue={t.title}
+                      spellCheck={false}
+                      onFocus={(e) => e.currentTarget.select()}
+                      onClick={(e) => e.stopPropagation()}
+                      onBlur={(e) => renameTab(t.id, e.currentTarget.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') renameTab(t.id, e.currentTarget.value)
+                        if (e.key === 'Escape') setRenamingTabId(null)
+                      }}
+                    />
+                  ) : (
+                    <span className="q-tab-title">{t.title}</span>
+                  )}
+                  <span
+                    className="q-close"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      closeTab(t.id)
+                    }}
+                  >
+                    ×
+                  </span>
+                </div>
+              )
+            })}
             <div className="q-tab" onClick={addTab} title="New console (⌘N)">
               +
             </div>
           </div>
+
+          {tabMenu && (() => {
+            const at = tabs.findIndex((t) => t.id === tabMenu.id)
+            const others = tabs.filter((t) => t.id !== tabMenu.id).map((t) => t.id)
+            const right = tabs.slice(at + 1).map((t) => t.id)
+            const left = tabs.slice(0, Math.max(at, 0)).map((t) => t.id)
+            const item = (label: string, run: () => void, enabled = true) => (
+              <div
+                style={enabled ? undefined : { opacity: 0.4, pointerEvents: 'none' }}
+                onClick={() => {
+                  run()
+                  setTabMenu(null)
+                }}
+              >
+                {label}
+              </div>
+            )
+            return (
+              <div className="context-menu" style={{ left: tabMenu.x, top: tabMenu.y }}>
+                {item('Rename…', () => setRenamingTabId(tabMenu.id))}
+                {item('Duplicate', () => duplicateTab(tabMenu.id))}
+                <hr />
+                {item('Close', () => closeTab(tabMenu.id))}
+                {item('Close Others', () => closeTabs(others), others.length > 0)}
+                {item('Close Tabs to the Left', () => closeTabs(left), left.length > 0)}
+                {item('Close Tabs to the Right', () => closeTabs(right), right.length > 0)}
+                {item('Close All', () => closeTabs(tabs.map((t) => t.id)))}
+                <hr />
+                {item('Reopen Closed Console', reopenTab, closedTabs.current.length > 0)}
+              </div>
+            )
+          })()}
 
           <div className="editor-pane">
             {activeTab && (

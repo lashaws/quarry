@@ -106,18 +106,68 @@ export interface TableMeta {
   foreignKeys: ForeignKey[]
   indexes: IndexMeta[]
   rowEstimate: number | null
+  /** absent in catalogs cached before triggers were introspected */
+  triggers?: TriggerMeta[]
+}
+
+export interface TriggerMeta {
+  name: string
+  /** e.g. "BEFORE UPDATE", "AFTER INSERT OR DELETE" */
+  timing: string
+  enabled: boolean
+}
+
+export type RoutineKind = 'function' | 'procedure' | 'aggregate' | 'window'
+
+export interface RoutineMeta {
+  /** pg_proc oid; feeds pg_get_functiondef for the source */
+  oid: number
+  name: string
+  kind: RoutineKind
+  /** identity arguments, e.g. "p_id integer, p_name text" */
+  args: string
+  /** null for procedures */
+  returns: string | null
+  language: string
+  comment: string | null
+}
+
+export interface SequenceMeta {
+  name: string
+  dataType: string
+  /** "table.column" when the sequence backs a serial/identity column */
+  ownedBy: string | null
+}
+
+export interface TypeMeta {
+  name: string
+  kind: 'enum' | 'domain' | 'composite' | 'range'
+  /** enum labels, or the base type of a domain */
+  detail: string
 }
 
 export interface SchemaMeta {
   name: string
   tables: TableMeta[]
+  /** The rest are optional so catalogs cached by older builds still load. */
+  routines?: RoutineMeta[]
+  sequences?: SequenceMeta[]
+  types?: TypeMeta[]
 }
+
+/** What the tree can ask main for the source of. */
+export type SourceTarget =
+  | { kind: 'routine'; oid: number }
+  | { kind: 'view'; schema: string; name: string }
+  | { kind: 'trigger'; schema: string; table: string; name: string }
 
 export interface Catalog {
   connectionId: string
   database: string
   schemas: SchemaMeta[]
   fetchedAt: number
+  /** set when served from disk because the server is unreachable */
+  offline?: boolean
 }
 
 export interface QueryField {
@@ -275,6 +325,10 @@ export interface Api {
   }
   catalog: {
     get(connectionId: string, refresh?: boolean): Promise<Catalog>
+    /** last catalog seen for this connection, kept on disk so the tree works offline */
+    cached(connectionId: string): Promise<Catalog | null>
+    /** CREATE statement for a routine, view or trigger, straight from the server */
+    source(connectionId: string, target: SourceTarget): Promise<string>
   }
   query: {
     run(req: QueryRequest): Promise<QueryResult>
@@ -356,6 +410,8 @@ export interface EditorTab {
   title: string
   connectionId: string | null
   sql: string
+  /** set when the user renamed the tab; stops the title following the SQL */
+  customTitle?: boolean
 }
 
 export interface WorkspaceState {
@@ -379,6 +435,8 @@ export const IPC = {
   awsTunnels: 'aws:tunnels',
   awsTunnelsChanged: 'aws:tunnelsChanged',
   catalogGet: 'catalog:get',
+  catalogCached: 'catalog:cached',
+  catalogSource: 'catalog:source',
   queryRun: 'query:run',
   queryRunScript: 'query:runScript',
   queryDdl: 'query:ddl',

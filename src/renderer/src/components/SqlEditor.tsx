@@ -17,6 +17,8 @@ export interface EditorApi {
    * IPC, never as an editor key event.
    */
   armOrRun(): boolean
+  /** inserts at the caret, on a line of its own, as one undoable edit */
+  insertText(text: string): void
 }
 
 interface Props {
@@ -163,7 +165,23 @@ export function SqlEditor({
         if (!pos) return model.getValue()
         return statementAt(model.getValue(), model.getOffsetAt(pos))?.text ?? model.getValue()
       },
-      armOrRun
+      armOrRun,
+      insertText(text: string): void {
+        const model = ed.getModel()
+        const pos = ed.getPosition()
+        if (!model || !pos) return
+        const line = model.getLineContent(pos.lineNumber)
+        // Mid-statement, start a fresh line below rather than splicing into it.
+        const at = line.trim()
+          ? { lineNumber: pos.lineNumber, column: line.length + 1 }
+          : pos
+        const insert = line.trim() ? `\n\n${text}` : text
+        const range = new monaco.Range(at.lineNumber, at.column, at.lineNumber, at.column)
+        ed.executeEdits('quarry-tree', [{ range, text: insert, forceMoveMarkers: true }])
+        ed.pushUndoStop()
+        ed.revealPositionInCenterIfOutsideViewport(ed.getPosition()!)
+        ed.focus()
+      }
     })
 
     if (import.meta.env.DEV) (window as unknown as Record<string, unknown>).__editor = ed

@@ -97,14 +97,23 @@ input:focus, select:focus { border-color: var(--border-focus); }
   width: 14px; flex: none; text-align: center;
   color: var(--text-muted); font-size: 9px;
 }
-.tree-row .q-label { overflow: hidden; text-overflow: ellipsis; }
-.tree-row .meta { color: var(--text-muted); font-size: 11px; margin-left: auto; padding-left: 10px; }
+.tree-row .q-label { overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 0; }
+/* The name matters more than its type: meta gives way first when the row is tight. */
+.tree-row .meta {
+  color: var(--text-muted); font-size: 11px; margin-left: auto; padding-left: 10px;
+  flex: 0 12 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+}
 .tree-row .badge {
   font-size: 9px; font-weight: 700; letter-spacing: 0.4px;
   padding: 1px 4px; border-radius: 3px; flex: none;
 }
 .badge-pk { background: #4a421f; color: #e0c46c; }
 .badge-fk { background: #1f3a4a; color: #6cb6e0; }
+.tree-row .tree-icon { width: 12px; flex: none; text-align: center; font-size: 11px; }
+.tree-row .tree-folder { color: var(--text-muted); }
+.tree-row .tree-dim { color: var(--text-muted); margin-left: 1px; }
+.sidebar-header .tree-tool { padding: 0 5px; font-size: 13px; color: var(--text-muted); flex: none; }
+.sidebar-header .tree-tool:hover { color: var(--text); }
 .q-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
 
 /* ---- splitters ---- */
@@ -136,6 +145,12 @@ input:focus, select:focus { border-color: var(--border-focus); }
 .q-tab .q-close { opacity: 0; font-size: 14px; line-height: 1; color: var(--text-muted); }
 .q-tab:hover .q-close { opacity: 1; }
 .q-tab .q-close:hover { color: var(--text); }
+.q-tab .q-tab-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.q-tab input.q-tab-rename { height: 18px; width: 140px; font-size: 12px; padding: 0 4px; }
+.q-tab.q-tab-dragging { opacity: 0.4; }
+.q-tab.q-drop-before { box-shadow: inset 2px 0 0 var(--accent); }
+.q-tab.q-drop-after { box-shadow: inset -2px 0 0 var(--accent); }
+.q-tab .q-tab-title { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 
 .editor-pane { flex: 1; min-height: 0; position: relative; }
 .results-pane { flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--bg-app); }
@@ -313,6 +328,7 @@ pre.ddl {
 }
 .context-menu > div { padding: 5px 12px; cursor: default; white-space: nowrap; }
 .context-menu > div:hover { background: var(--bg-selected); }
+.context-menu > hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
 
 .result-tab .tab-notice { color: var(--warning); margin-left: 5px; font-size: 9px; }
 

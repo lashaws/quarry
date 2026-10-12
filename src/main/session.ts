@@ -5,12 +5,13 @@ import type Cursor from 'pg-cursor'
 import { splitStatements } from '@shared/sql'
 import type {
   Catalog, Cell, ConnectionConfig, ConnectionState, EditTarget,
-  GridEdits, PendingChange, PlanNode, QueryRequest, QueryResult, TestResult, TunnelStatus, TxMode
+  GridEdits, PendingChange, PlanNode, QueryRequest, QueryResult, SourceTarget, TestResult, TunnelStatus, TxMode
 } from '@shared/ipc'
 import { AwsCliError, fetchSecretPassword, withRotatedSecret } from './aws/cli'
 import { TunnelManager, type TunnelLease } from './aws/tunnel'
 import { PgConnection, toQueryError, type RawChunk } from './drivers/postgres'
-import { introspect } from './introspect/postgres'
+import { introspect, sourceOf } from './introspect/postgres'
+import { readCachedCatalog, writeCachedCatalog } from './store/catalogs'
 import { buildChanges } from './query/dml'
 import { renderDdl } from './query/ddl'
 import { parsePlan } from './query/plan'
@@ -211,7 +212,17 @@ export class Session {
     if (refresh) await conn.refreshTableNames()
     const cat = await introspect(conn)
     this.catalogs.set(id, cat)
+    writeCachedCatalog(cat)
     return cat
+  }
+
+  cachedCatalog(id: string): Catalog | null {
+    const cat = this.catalogs.get(id) ?? readCachedCatalog(id)
+    return cat && !this.connections.has(id) ? { ...cat, offline: true } : cat
+  }
+
+  async source(id: string, target: SourceTarget): Promise<string> {
+    return sourceOf(await this.conn(id), target)
   }
 
   private resolveEditTarget(id: string, chunk: RawChunk, sql: string): EditTarget | null {

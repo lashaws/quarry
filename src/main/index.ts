@@ -1,10 +1,11 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { GridEdits, ConnectionConfig, QueryRequest, TxMode, WorkspaceState } from '@shared/ipc'
+import type { GridEdits, ConnectionConfig, QueryRequest, SourceTarget, TxMode, WorkspaceState } from '@shared/ipc'
 import { IPC } from '@shared/ipc'
 import { Session } from './session'
 import { AwsCliError, ssoLogin } from './aws/cli'
+import { removeCachedCatalog } from './store/catalogs'
 import { importFromDBeaver, listConnections, removeConnection, saveConnection } from './store/connections'
 import { search as searchHistory } from './store/history'
 import { readJson, writeJson } from './store/json'
@@ -123,6 +124,9 @@ function buildMenu(): void {
       submenu: [
         { label: 'New Console', accelerator: 'CmdOrCtrl+N', click: () => send('menu:newTab') },
         { label: 'Close Console', accelerator: 'CmdOrCtrl+W', click: () => send('menu:closeTab') },
+        { label: 'Reopen Closed Console', accelerator: 'CmdOrCtrl+Shift+T', click: () => send('menu:reopenTab') },
+        { label: 'Next Console', accelerator: 'CmdOrCtrl+Shift+]', click: () => send('menu:nextTab') },
+        { label: 'Previous Console', accelerator: 'CmdOrCtrl+Shift+[', click: () => send('menu:prevTab') },
         { type: 'separator' },
         { label: 'New Connection…', accelerator: 'CmdOrCtrl+Shift+N', click: () => send('menu:newConnection') },
         { label: 'Export Result to CSV…', accelerator: 'CmdOrCtrl+Shift+E', click: () => send('menu:exportCsv') },
@@ -192,6 +196,7 @@ function registerIpc(): void {
   h(IPC.connectionsRemove, async (_e, id: string) => {
     await session.disconnect(id)
     removeConnection(id)
+    removeCachedCatalog(id)
   })
   h(IPC.connectionsTest, (_e, cfg: ConnectionConfig, password?: string) => session.test(cfg, password))
   h(IPC.connectionsConnect, async (_e, id: string) => {
@@ -213,6 +218,8 @@ function registerIpc(): void {
   h(IPC.connectionsImportDBeaver, () => importFromDBeaver())
 
   h(IPC.catalogGet, (_e, id: string, refresh?: boolean) => session.catalog(id, refresh))
+  h(IPC.catalogCached, (_e, id: string) => session.cachedCatalog(id))
+  h(IPC.catalogSource, (_e, id: string, target: SourceTarget) => session.source(id, target))
 
   h(IPC.queryRun, (_e, req: QueryRequest) => session.run(req, nameOf(req.connectionId)))
   h(IPC.queryFetchMore, (_e, queryId: string, count: number) => session.fetchMore(queryId, count))

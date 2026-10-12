@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { Api, GridEdits, ConnectionConfig, ConnectionState, QueryRequest, TunnelStatus, TxMode, WorkspaceState } from '@shared/ipc'
+import type { Api, GridEdits, ConnectionConfig, ConnectionState, QueryRequest, SourceTarget, TunnelStatus, TxMode, WorkspaceState } from '@shared/ipc'
 import { IPC } from '@shared/ipc'
 
 const invoke = ipcRenderer.invoke.bind(ipcRenderer)
@@ -34,7 +34,9 @@ const api: Api = {
     }
   },
   catalog: {
-    get: (id: string, refresh?: boolean) => invoke(IPC.catalogGet, id, refresh)
+    get: (id: string, refresh?: boolean) => invoke(IPC.catalogGet, id, refresh),
+    cached: (id: string) => invoke(IPC.catalogCached, id),
+    source: (id: string, target: SourceTarget) => invoke(IPC.catalogSource, id, target)
   },
   query: {
     run: (req: QueryRequest) => invoke(IPC.queryRun, req),
@@ -73,7 +75,7 @@ const MENU_CHANNELS = [
   'menu:newTab', 'menu:closeTab', 'menu:newConnection', 'menu:execute', 'menu:cancel',
   'menu:commit', 'menu:rollback', 'menu:format', 'menu:refresh', 'menu:goToTable',
   'menu:history', 'menu:exportCsv', 'menu:runScript', 'menu:explain', 'menu:explainAnalyze',
-  'menu:ddl', 'menu:addRow', 'menu:deleteRow', 'menu:setNull'
+  'menu:ddl', 'menu:addRow', 'menu:deleteRow', 'menu:setNull', 'menu:reopenTab', 'menu:nextTab', 'menu:prevTab'
 ] as const
 
 contextBridge.exposeInMainWorld('api', api)
