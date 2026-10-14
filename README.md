@@ -113,6 +113,19 @@ drops (idle timeout) is reopened on the same port when the connection redials.
 connections were migrated to this; it is a one-off and specific to that setup.
 `npm run test:aws` drives the whole path against a live database.
 
+## Share a connection
+
+Right-click a connection and choose **Export Connection…** (or **Export…** in the
+connection editor) to save a `name.quarry.json` file. It holds host, port,
+database, user, SSL settings, the SSM tunnel and the Secrets Manager source.
+It never holds a password.
+
+The teammate opens **New Connection** (⌘⇧N), clicks **Import from file…**,
+checks that the AWS profile names match their own `~/.aws/config`, and saves.
+With a Secrets Manager source they need no password at all: it is read with
+their own AWS login. Otherwise they type their password, which goes into their
+Keychain.
+
 ## Keybindings
 
 | | |

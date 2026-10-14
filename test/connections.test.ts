@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { app } from 'electron'
 import type { ConnectionConfig } from '@shared/ipc'
-import { listConnections, removeConnection, saveConnection } from '../src/main/store/connections.ts'
+import { listConnections, parseShareFile, removeConnection, saveConnection, shareFileName, toShareFile } from '../src/main/store/connections.ts'
 
 let pass = 0, fail = 0
 const ok = (label: string, cond: boolean, extra = ''): void => {
@@ -57,6 +57,33 @@ console.log('edit and remove')
   ok('unticking the AWS options removes them', cleared?.ssmTunnel === undefined && cleared?.passwordSource === undefined)
   removeConnection('aws-1')
   ok('remove works for AWS connections', !listConnections().some((c) => c.id === 'aws-1'))
+}
+
+console.log('sharing with a teammate')
+{
+  const file = JSON.stringify(toShareFile([aws, { ...plain, ssl: true }]))
+  ok('the shared file carries no ids', !file.includes('aws-1') && !file.includes('plain-1'))
+  ok('the shared file carries no password', !file.includes('keychain-pw') && !/"password"\s*:/.test(file))
+  ok('the legacy ssl flag travels as an sslMode', !file.includes('"ssl"') && file.includes('"require"'))
+  const back = parseShareFile(file)
+  ok('round trip keeps the AWS settings', JSON.stringify(back[0]) === JSON.stringify({ ...aws, id: '' }), JSON.stringify(back[0]))
+  ok('imports arrive unsaved', back.every((c) => c.id === ''))
+  ok('two connections in, two out', back.length === 2 && back[1].port === 5433)
+
+  const throws = (text: string, needle: string): boolean => {
+    try { parseShareFile(text); return false } catch (e) { return (e as Error).message.includes(needle) }
+  }
+  ok('garbage is refused', throws('{nope', 'not valid JSON'))
+  ok('another JSON file is refused', throws('{"connections": []}', 'not a Quarry connection file'))
+  ok('a future version is refused', throws(JSON.stringify({ format: 'quarry.connections', version: 2, connections: [] }), 'newer'))
+  const hostile = parseShareFile(JSON.stringify({
+    format: 'quarry.connections', version: 1,
+    connections: [{ name: 'x', id: 'evil', host: 7, port: -1, sslMode: 'yolo', file: '/etc/passwd', color: 'red; x', extra: 1 }]
+  }))[0] as unknown as Record<string, unknown>
+  ok('unknown or mistyped fields are dropped', hostile['id'] === '' && hostile['host'] === 'localhost' && hostile['port'] === 5432 &&
+    hostile['sslMode'] === 'disable' && !('file' in hostile) && !('extra' in hostile) && !('color' in hostile), JSON.stringify(hostile))
+  ok('file name comes from the connection name', shareFileName([aws]) === 'test-admin.quarry.json')
+  ok('several connections get a generic name', shareFileName([aws, plain]) === 'connections.quarry.json')
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

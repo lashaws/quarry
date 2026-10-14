@@ -381,7 +381,8 @@ export function SchemaTree(props: Props) {
                   openMenu(e, key, [
                     { label: isConnected ? 'Disconnect' : 'Connect', run: () => props.onToggleConnection(c.id) },
                     { label: 'Refresh Catalog', run: () => { props.onSelectConnection(c.id); props.onRefresh() } },
-                    { label: 'Edit Connection…', run: () => props.onEditConnection(c) }
+                    { label: 'Edit Connection…', run: () => props.onEditConnection(c) },
+                    { label: 'Export Connection…', run: () => void window.api.connections.exportToFile([c]) }
                   ])
                 }
               >

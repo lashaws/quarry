@@ -314,6 +314,10 @@ export interface Api {
     disconnect(id: string): Promise<void>
     state(id: string): Promise<ConnectionState>
     importFromDBeaver(): Promise<ConnectionConfig[]>
+    /** Save configs to a file a teammate can import. Never includes passwords. Resolves to the path, or null if cancelled. */
+    exportToFile(cfgs: ConnectionConfig[]): Promise<string | null>
+    /** Pick a shared file and parse it into unsaved configs (empty ids). Null if cancelled. */
+    importFromFile(): Promise<{ connections: ConnectionConfig[]; error?: string } | null>
     /** Main reports a connection dropping or coming back on its own. Returns the unsubscribe. */
     onChanged(cb: (state: ConnectionState) => void): () => void
   }
@@ -431,6 +435,8 @@ export const IPC = {
   connectionsState: 'connections:state',
   connectionsChanged: 'connections:changed',
   connectionsImportDBeaver: 'connections:importDBeaver',
+  connectionsExportFile: 'connections:exportFile',
+  connectionsImportFile: 'connections:importFile',
   awsSsoLogin: 'aws:ssoLogin',
   awsTunnels: 'aws:tunnels',
   awsTunnelsChanged: 'aws:tunnelsChanged',

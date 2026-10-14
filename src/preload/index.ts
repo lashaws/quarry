@@ -18,6 +18,8 @@ const api: Api = {
     disconnect: (id: string) => invoke(IPC.connectionsDisconnect, id),
     state: (id: string) => invoke(IPC.connectionsState, id),
     importFromDBeaver: () => invoke(IPC.connectionsImportDBeaver),
+    exportToFile: (cfgs: ConnectionConfig[]) => invoke(IPC.connectionsExportFile, cfgs),
+    importFromFile: () => invoke(IPC.connectionsImportFile),
     onChanged: (cb: (state: ConnectionState) => void) => {
       const listener = (_e: unknown, state: ConnectionState): void => cb(state)
       ipcRenderer.on(IPC.connectionsChanged, listener)

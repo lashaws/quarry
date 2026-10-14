@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ConnectionConfig, PasswordSource, SslMode, SsmTunnel } from '@shared/ipc'
 import { SsoLoginButton } from './SsoLogin'
 
@@ -41,6 +41,14 @@ export function ConnectionDialog({ initial, onCancel, onSaved, onDeleted }: Prop
   const [note, setNote] = useState<{ text: string; ok: boolean; ssoProfile?: string } | null>(null)
   const [busy, setBusy] = useState(false)
   const [imports, setImports] = useState<ConnectionConfig[]>([])
+  const [fromFile, setFromFile] = useState<ConnectionConfig[]>([])
+  const [importNote, setImportNote] = useState<{ text: string; ok: boolean } | null>(null)
+  const noteRef = useRef<HTMLDivElement>(null)
+
+  // The body scrolls; bring a Test or Export result into view instead of leaving it below the fold.
+  useEffect(() => {
+    noteRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [note])
 
   useEffect(() => {
     if (!initial) void window.api.connections.importFromDBeaver().then(setImports)
@@ -67,6 +75,34 @@ export function ConnectionDialog({ initial, onCancel, onSaved, onDeleted }: Prop
     }
   }
 
+  /** Fill the form from a shared config; the teammate still supplies their own password. */
+  const adopt = (c: ConnectionConfig): void => {
+    setCfg({ ...c, id: '' })
+    setPassword('')
+    const aws = c.ssmTunnel || c.passwordSource
+    setNote(null)
+    setImportNote({
+      text:
+        `Imported “${c.name}”.` +
+        (c.passwordSource ? '' : ' Enter the user and password.') +
+        (aws ? ' Check the AWS profile names match ones in your ~/.aws/config.' : ''),
+      ok: true
+    })
+  }
+
+  const importFile = async (): Promise<void> => {
+    const res = await window.api.connections.importFromFile()
+    if (!res) return
+    if (res.error) return setImportNote({ text: res.error, ok: false })
+    setFromFile(res.connections.length > 1 ? res.connections : [])
+    if (res.connections[0]) adopt(res.connections[0])
+  }
+
+  const exportFile = async (): Promise<void> => {
+    const path = await window.api.connections.exportToFile([{ ...cfg, name: cfg.name || cfg.database || 'Connection' }])
+    if (path) setNote({ text: `Exported to ${path}. Passwords are not included.`, ok: true })
+  }
+
   const save = async (): Promise<void> => {
     setBusy(true)
     try {
@@ -85,6 +121,24 @@ export function ConnectionDialog({ initial, onCancel, onSaved, onDeleted }: Prop
       <div className="q-modal" onMouseDown={(e) => e.stopPropagation()}>
         <h2>{initial ? 'Edit Connection' : 'New Connection'}</h2>
         <div className="q-body">
+          {!initial && (
+            <div className="q-note">
+              <button className="ghost" style={{ textDecoration: 'underline', padding: '0 4px' }} onClick={() => void importFile()}>
+                Import from file…
+              </button>
+              {fromFile.length > 0 && (
+                <>
+                  {' '}choose:{' '}
+                  {fromFile.map((c, i) => (
+                    <button key={i} className="ghost" style={{ textDecoration: 'underline', padding: '0 4px' }} onClick={() => adopt(c)}>
+                      {c.name}
+                    </button>
+                  ))}
+                </>
+              )}
+              {importNote && <div className={`q-note ${importNote.ok ? 'ok' : 'bad'}`} role="status">{importNote.text}</div>}
+            </div>
+          )}
           {!initial && imports.length > 0 && (
             <div className="q-note">
               Found in DBeaver:{' '}
@@ -256,7 +310,7 @@ export function ConnectionDialog({ initial, onCancel, onSaved, onDeleted }: Prop
           </fieldset>
           <div className="q-note">Passwords are stored in the macOS Keychain, never on disk in the clear.</div>
           {note && (
-            <div className={`q-note ${note.ok ? 'ok' : 'bad'}`} role={note.ok ? 'status' : 'alert'}>
+            <div ref={noteRef} className={`q-note ${note.ok ? 'ok' : 'bad'}`} role={note.ok ? 'status' : 'alert'}>
               {note.text}
             </div>
           )}
@@ -270,6 +324,11 @@ export function ConnectionDialog({ initial, onCancel, onSaved, onDeleted }: Prop
               style={{ borderColor: 'var(--danger)', color: 'var(--danger)' }}
             >
               Delete
+            </button>
+          )}
+          {initial && (
+            <button onClick={() => void exportFile()} title="Save these settings to a file a teammate can import. Passwords are not included.">
+              Export…
             </button>
           )}
           <div className="spacer" />

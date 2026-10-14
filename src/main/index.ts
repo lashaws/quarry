@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
+import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { GridEdits, ConnectionConfig, QueryRequest, SourceTarget, TxMode, WorkspaceState } from '@shared/ipc'
@@ -6,7 +7,7 @@ import { IPC } from '@shared/ipc'
 import { Session } from './session'
 import { AwsCliError, ssoLogin } from './aws/cli'
 import { removeCachedCatalog } from './store/catalogs'
-import { importFromDBeaver, listConnections, removeConnection, saveConnection } from './store/connections'
+import { importFromDBeaver, listConnections, parseShareFile, removeConnection, saveConnection, shareFileName, toShareFile } from './store/connections'
 import { search as searchHistory } from './store/history'
 import { readJson, writeJson } from './store/json'
 
@@ -216,6 +217,33 @@ function registerIpc(): void {
   h(IPC.connectionsDisconnect, (_e, id: string) => session.disconnect(id))
   h(IPC.connectionsState, (_e, id: string) => session.state(id))
   h(IPC.connectionsImportDBeaver, () => importFromDBeaver())
+  h(IPC.connectionsExportFile, async (_e, cfgs: ConnectionConfig[]) => {
+    if (!mainWindow || cfgs.length === 0) return null
+    const res = await dialog.showSaveDialog(mainWindow, {
+      title: 'Export Connection',
+      defaultPath: shareFileName(cfgs),
+      filters: [{ name: 'Quarry connection', extensions: ['json'] }]
+    })
+    if (res.canceled || !res.filePath) return null
+    await writeFile(res.filePath, JSON.stringify(toShareFile(cfgs), null, 2) + '\n', 'utf8')
+    return res.filePath
+  })
+  h(IPC.connectionsImportFile, async () => {
+    if (!mainWindow) return null
+    const res = await dialog.showOpenDialog(mainWindow, {
+      title: 'Import Connection',
+      properties: ['openFile'],
+      filters: [{ name: 'Quarry connection', extensions: ['json'] }]
+    })
+    const path = res.filePaths[0]
+    if (res.canceled || !path) return null
+    // Answered, not thrown: an Error crossing IPC arrives wrapped in Electron's own prefix.
+    try {
+      return { connections: parseShareFile(await readFile(path, 'utf8')) }
+    } catch (err) {
+      return { connections: [], error: err instanceof Error ? err.message : String(err) }
+    }
+  })
 
   h(IPC.catalogGet, (_e, id: string, refresh?: boolean) => session.catalog(id, refresh))
   h(IPC.catalogCached, (_e, id: string) => session.cachedCatalog(id))

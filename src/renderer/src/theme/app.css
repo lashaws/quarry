@@ -208,26 +208,38 @@ button.tx-mode.manual:hover:not(:disabled) { background: var(--bg-hover); }
 .q-overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,0.5);
   display: flex; align-items: flex-start; justify-content: center;
-  padding-top: 12vh; z-index: 50;
+  padding: 8vh 16px 16px; z-index: 50;
 }
+/* Title and footer stay put; only the body scrolls, so Save is always reachable
+   however many AWS fields are open. */
 .q-modal {
   background: var(--bg-panel); border: 1px solid var(--border-strong);
   border-radius: 6px; box-shadow: var(--shadow-popup);
-  width: 460px; max-width: 90vw;
+  width: 520px; max-width: 100%; max-height: 100%;
+  display: flex; flex-direction: column;
 }
 .q-modal.wide { width: 620px; }
-.q-modal h2 { margin: 0; padding: 12px 16px; font-size: 13px; border-bottom: 1px solid var(--border); }
-.q-modal .q-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.q-modal h2 { margin: 0; padding: 12px 16px; font-size: 13px; border-bottom: 1px solid var(--border); flex: none; }
+.q-modal .q-body {
+  padding: 14px 16px; display: flex; flex-direction: column; gap: 10px;
+  overflow-y: auto; min-height: 0;
+}
 .q-modal .q-footer {
   padding: 10px 16px; border-top: 1px solid var(--border);
-  display: flex; gap: 8px; align-items: center;
+  display: flex; gap: 8px; align-items: center; flex: none;
 }
 .q-modal .q-footer .spacer { flex: 1; }
-.q-field { display: flex; flex-direction: column; gap: 4px; }
+/* Inputs carry an intrinsic width; without min-width: 0 a flex row can't shrink
+   them and the fields spill past the dialog's edge. */
+.q-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .q-field label { color: var(--text-dim); font-size: 11px; }
+.q-field input, .q-field select, .q-row input, .q-row select { width: 100%; min-width: 0; }
 .q-row { display: flex; gap: 10px; }
-.q-row > * { flex: 1; }
-.q-aws { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 8px 10px 10px; border: 1px solid var(--border); border-radius: 4px; }
+.q-row > * { flex: 1; min-width: 0; }
+.q-row > div:not(.q-field) { display: flex; flex-direction: column; gap: 4px; }
+.q-row > div:not(.q-field) > label { color: var(--text-dim); font-size: 11px; }
+/* A fieldset defaults to min-inline-size: min-content and would grow past its parent. */
+.q-aws { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 8px 10px 10px; border: 1px solid var(--border); border-radius: 4px; min-width: 0; }
 .q-aws legend { padding: 0 4px; color: var(--text-dim); font-size: 11px; }
 .q-check { display: flex; align-items: center; gap: 6px; color: var(--text); font-size: 12px; }
 .q-note { font-size: 11px; color: var(--text-muted); }

@@ -86,6 +86,13 @@ grid with sorting, filtering, `Copy as` and CSV export already working.
       secret and key, never a value. Unit: 32 assertions.
 - [x] **46. Titlebar tunnel status** — "Opening SSM tunnel…" and "SSM tunnel :port" pills with the
       profile, jump host and connection count on hover.
+- [x] **47. Share a connection with a teammate** — *Export…* in the connection editor (or the tree's
+      context menu) writes a `.quarry.json` with host, SSL, SSM tunnel and Secrets Manager source, never
+      a password; *Import from file…* in New Connection fills the form from it. The parser copies only
+      known, correctly typed fields. Unit: 13 assertions (round trip, no ids or passwords, hostile file).
+- [x] **48. Connection dialog fits the window** — the body scrolls between a fixed title and footer, so
+      Save stays reachable with both AWS options open; rows and the AWS fieldset no longer spill past
+      the dialog's right edge.
 
 ## Bugs found by audit and fixed
 
@@ -138,6 +145,6 @@ grid with sorting, filtering, `Copy as` and CSV export already working.
 
 ## Test suites
 
-`npm run test:all` — 303 unit · 68 live driver · 49 Session. `npm run test:aws` (9 assertions) is separate: it needs a live SSO login to AWS.
+`npm run test:all` — 325 unit · 68 live driver · 49 Session. `npm run test:aws` (9 assertions) is separate: it needs a live SSO login to AWS.
 The Session suite exists because that layer had no coverage and hid the deadlock
 behind 205 otherwise-passing assertions.
